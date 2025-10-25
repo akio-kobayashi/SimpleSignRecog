@@ -110,31 +110,39 @@ def extract_landmarks_from_video(
             frame_landmarks = np.full(LANDMARK_DIM, np.nan, dtype=np.float32)
 
             if result.multi_hand_landmarks:
-                # handedness（Left/Right）を検出されたランドマークに対応付け
                 handedness_map = {}
                 if result.multi_handedness:
                     for h_data in result.multi_handedness:
-                        label = h_data.classification[0].label # "Left" or "Right"
-                        index = h_data.classification[0].index # multi_hand_landmarksのインデックスに対応
-                        handedness_map[index] = label
+                        handedness_map[h_data.classification[0].index] = h_data.classification[0].label
+
+                # 2本の手が検出され、1つだけラベルが判明している場合に、もう片方を推測
+                if len(result.multi_hand_landmarks) == 2 and len(handedness_map) == 1:
+                    known_idx = list(handedness_map.keys())[0]
+                    known_label = list(handedness_map.values())[0]
+                    unknown_idx = 1 - known_idx
+                    inferred_label = "Left" if known_label == "Right" else "Right"
+                    handedness_map[unknown_idx] = inferred_label
+                    # print(f"[INFO] 推測された手: {inferred_label} (ビデオ: {video_path.name}, フレーム: {frame_idx})")
+                
+                # 1本の手が検出され、ラベルが不明な場合、正規化された手（右手）として扱う
+                elif len(result.multi_hand_landmarks) == 1 and len(handedness_map) == 0:
+                    handedness_map[0] = "Right" # 正規化された手として右手を割り当てる
+                    # print(f"[INFO] 正規化された手 'Right' を割り当て (ビデオ: {video_path.name}, フレーム: {frame_idx})")
 
                 for hand_idx, hand_lms in enumerate(result.multi_hand_landmarks):
-                    hand_label = handedness_map.get(hand_idx, None)
+                    hand_label = handedness_map.get(hand_idx)
 
-                    # ランドマークデータを格納する配列内の開始インデックスを決定
                     start_idx = -1
                     if hand_label == "Left":
-                        start_idx = 0 # 左手は0-62インデックス
+                        start_idx = 0
                     elif hand_label == "Right":
-                        start_idx = 21 * 3 # 右手は63-125インデックス
+                        start_idx = 21 * 3
                     else:
-                        # 予期しないラベルの場合、またはmax_num_handsが2より大きい場合
                         print(f"[WARN] 予期しない手のラベル: {hand_label} (ビデオ: {video_path.name}, フレーム: {frame_idx})")
-                        continue # この手はスキップ
+                        continue
 
                     if start_idx != -1:
                         for lm_id, lm in enumerate(hand_lms.landmark):
-                            # x, y, z は正規化座標
                             base_idx = start_idx + lm_id * 3
                             frame_landmarks[base_idx] = lm.x
                             frame_landmarks[base_idx + 1] = lm.y
