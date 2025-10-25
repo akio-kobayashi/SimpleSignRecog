@@ -60,7 +60,7 @@ def extract_landmarks_from_video(
     max_num_hands=2,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
-) -> np.ndarray:
+) -> tuple[np.ndarray, bool]:
     """
     動画からMediaPipe Handsのランドマークを抽出し、NumPy配列として返す。
     手が検出されないフレームや手にはNaNを格納する。
@@ -72,14 +72,15 @@ def extract_landmarks_from_video(
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"[WARN] 失敗: {video_path} を開けませんでした。", file=sys.stderr)
-        return np.array([]) # 動画が開けない場合は空の配列を返す
+        return np.array([]), False
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
-    all_frame_landmarks = [] # 全フレームのランドマークデータを格納するリスト
+    all_frame_landmarks = []
+    had_inference = False  # この動画で推測が行われたかどうかのフラグ
     writer = None
     out_draw_path = None
     if draw:
@@ -106,7 +107,6 @@ def extract_landmarks_from_video(
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             result = hands.process(rgb)
 
-            # 各フレームのランドマークデータをNaNで初期化 (左手63次元, 右手63次元)
             frame_landmarks = np.full(LANDMARK_DIM, np.nan, dtype=np.float32)
 
             if result.multi_hand_landmarks:
@@ -115,19 +115,22 @@ def extract_landmarks_from_video(
                     for h_data in result.multi_handedness:
                         handedness_map[h_data.classification[0].index] = h_data.classification[0].label
 
-                # 2本の手が検出され、1つだけラベルが判明している場合に、もう片方を推測
+                # --- 推測ロジック ---
                 if len(result.multi_hand_landmarks) == 2 and len(handedness_map) == 1:
                     known_idx = list(handedness_map.keys())[0]
                     known_label = list(handedness_map.values())[0]
                     unknown_idx = 1 - known_idx
                     inferred_label = "Left" if known_label == "Right" else "Right"
                     handedness_map[unknown_idx] = inferred_label
-                    # print(f"[INFO] 推測された手: {inferred_label} (ビデオ: {video_path.name}, フレーム: {frame_idx})")
-                
-                # 1本の手が検出され、ラベルが不明な場合、正規化された手（右手）として扱う
+                    had_inference = True
                 elif len(result.multi_hand_landmarks) == 1 and len(handedness_map) == 0:
-                    handedness_map[0] = "Right" # 正規化された手として右手を割り当てる
-                    # print(f"[INFO] 正規化された手 'Right' を割り当て (ビデオ: {video_path.name}, フレーム: {frame_idx})")
+                    handedness_map[0] = "Right"
+                    had_inference = True
+                elif len(result.multi_hand_landmarks) == 2 and len(handedness_map) == 0:
+                    handedness_map[0] = "Right"
+                    handedness_map[1] = "Left"
+                    had_inference = True
+                # --- 推測ロジックここまで ---
 
                 for hand_idx, hand_lms in enumerate(result.multi_hand_landmarks):
                     hand_label = handedness_map.get(hand_idx)
@@ -138,7 +141,8 @@ def extract_landmarks_from_video(
                     elif hand_label == "Right":
                         start_idx = 21 * 3
                     else:
-                        print(f"[WARN] 予期しない手のラベル: {hand_label} (ビデオ: {video_path.name}, フレーム: {frame_idx})")
+                        # このケースは、max_num_hands > 2 の場合などに発生しうる
+                        print(f"[WARN] 処理されない手: {hand_label} (ビデオ: {video_path.name}, フレーム: {frame_idx})")
                         continue
 
                     if start_idx != -1:
@@ -148,15 +152,11 @@ def extract_landmarks_from_video(
                             frame_landmarks[base_idx + 1] = lm.y
                             frame_landmarks[base_idx + 2] = lm.z
 
-                    # 描画が有効な場合
                     if writer is not None:
                         mp_drawing.draw_landmarks(
-                            bgr,
-                            hand_lms,
-                            mp_hands.HAND_CONNECTIONS,
+                            bgr, hand_lms, mp_hands.HAND_CONNECTIONS,
                             mp_styles.get_default_hand_landmarks_style(),
-                            mp_styles.get_default_hand_connections_style()
-                        )
+                            mp_styles.get_default_hand_connections_style())
 
             all_frame_landmarks.append(frame_landmarks)
 
@@ -174,9 +174,9 @@ def extract_landmarks_from_video(
             print(f"[OK] 描画済み動画: {out_draw_path}")
 
     if not all_frame_landmarks:
-        return np.array([]) # 処理されたフレームがない場合は空の配列を返す
+        return np.array([]), had_inference
 
-    return np.array(all_frame_landmarks, dtype=np.float32)
+    return np.array(all_frame_landmarks, dtype=np.float32), had_inference
 
 def main():
     ap = argparse.ArgumentParser(description="MediaPipe Handsで動画から手指ランドマークを抽出し、NPZとメタデータCSVを出力")
@@ -218,7 +218,7 @@ def main():
 
         for video_path in videos_in_class:
             print(f"動画を処理中: {video_path}")
-            landmark_data = extract_landmarks_from_video(
+            landmark_data, had_inference = extract_landmarks_from_video(
                 video_path,
                 draw=args.draw,
                 draw_dir=draw_dir,
@@ -231,15 +231,16 @@ def main():
             if landmark_data.size > 0:
                 npz_filename = f"{video_path.stem}.npz"
                 npz_output_path = current_class_npz_output_dir / npz_filename
-                # np.savez_compressed を使用してデータを保存
                 np.savez_compressed(npz_output_path, landmarks=landmark_data)
                 print(f"[OK] NPZファイルが保存されました: {npz_output_path}")
 
                 # メタデータ行を追加
+                quality_flag = "inferred" if had_inference else "clean"
                 metadata_rows.append({
                     "npz_path": str(npz_output_path.relative_to(args.output_base_dir)), # 相対パス
                     "class_label": class_id,
                     "original_video_path": str(video_path),
+                    "quality_flag": quality_flag,
                 })
             else:
                 print(f"[WARN] ランドマークデータが抽出されませんでした: {video_path}")
