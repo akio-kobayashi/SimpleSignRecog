@@ -81,7 +81,7 @@ cat <<'MSG'
 
 [venv] 完了：
 - プロジェクト仮想環境 .venv を作成しました
-- 次回は「source .venv/bin/activate」で再利用できます
+- 次回は「source ./bin/.venv/bin/activate」で再利用できます
 - 依存を固定する場合は「uv lock」「uv sync」の運用を推奨します
 
 MSG

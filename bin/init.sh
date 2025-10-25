@@ -32,6 +32,6 @@ cat <<'MSG'
 [init] 完了：
 - uv を導入
 - Python を $HOME/.local/share/uv/python/ 以下に永続配置
-- 次は create_project_venv.sh をプロジェクトルートで実行
+- 次は create_venv.sh をプロジェクトルートで実行
 
 MSG
