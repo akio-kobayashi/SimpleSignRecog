@@ -9,7 +9,7 @@ import pandas as pd
 from pathlib import Path
 
 # 作成したモデルとデータセットのコンポーネントをインポート
-from src.model import SimpleCNN
+from src.model import TwoStreamCNN
 
 class Solver(pl.LightningModule):
     def __init__(self, config: dict[str, Any]) -> None:
@@ -24,7 +24,7 @@ class Solver(pl.LightningModule):
         self.save_hyperparameters()
 
         # 1. Instantiate the Model
-        self.model = SimpleCNN(**self.config['model'])
+        self.model = TwoStreamCNN(**self.config['model'])
 
         # 2. Define the loss function
         self.criterion = nn.CrossEntropyLoss()

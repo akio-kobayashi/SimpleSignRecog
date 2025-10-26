@@ -214,12 +214,7 @@ def calculate_features(landmarks: np.ndarray) -> np.ndarray:
     平滑化されたランドマークから全ての特徴量を計算する。
     - 運動特徴量（速度・加速度）
     - 形状特徴量（指先間距離）
-
-    Args:
-        landmarks (np.ndarray): (フレーム数, 126) の平滑化済みランドマーク配列。
-
-    Returns:
-        np.ndarray: 全ての特徴量を結合した最終的な特徴量配列。
+    最終的な特徴量ベクトルは [左手の特徴量, 右手の特徴量] の順に連結される。
     """
     # 運動特徴量
     velocity = np.diff(landmarks, axis=0, prepend=landmarks[0:1])
@@ -228,8 +223,25 @@ def calculate_features(landmarks: np.ndarray) -> np.ndarray:
     # 形状特徴量
     geometric = calculate_geometric_features(landmarks)
 
-    # 位置、速度、加速度、形状特徴量を結合
-    final_features = np.concatenate([landmarks, velocity, acceleration, geometric], axis=1)
+    # 左右の手の特徴量をそれぞれ結合し、最終的に左右の手の特徴量を連結する
+    # 左手の特徴量: [左手位置, 左手速度, 左手加速度, 左手形状]
+    left_features = np.concatenate([
+        landmarks[:, LEFT_HAND_SLICE],
+        velocity[:, LEFT_HAND_SLICE],
+        acceleration[:, LEFT_HAND_SLICE],
+        geometric[:, 0:4] # Left geometric features
+    ], axis=1) # Shape (T, 63+63+63+4 = 193)
+
+    # 右手の特徴量: [右手位置, 右手速度, 右手加速度, 右手形状]
+    right_features = np.concatenate([
+        landmarks[:, RIGHT_HAND_SLICE],
+        velocity[:, RIGHT_HAND_SLICE],
+        acceleration[:, RIGHT_HAND_SLICE],
+        geometric[:, 4:8] # Right geometric features
+    ], axis=1) # Shape (T, 193)
+
+    # 最終的な特徴量ベクトルは [左手の特徴量, 右手の特徴量] の順に連結
+    final_features = np.concatenate([left_features, right_features], axis=1) # Shape (T, 193 + 193 = 386)
     
     return final_features
 

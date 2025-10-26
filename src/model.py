@@ -3,80 +3,88 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-class SimpleCNN(nn.Module):
+class HandEncoder(nn.Module):
     """
-    時系列ランドマークデータのためのシンプルな1D-CNNモデル。
+    片手の特徴量をエンコードするための1D-CNNエンコーダ。
     """
-    def __init__(
-        self,
-        input_dim: int = 386,
-        num_classes: int = 20,
-        channels: int = 128,
-        dropout: float = 0.2
-    ):
-        """
-        Args:
-            input_dim (int): 入力特徴量の次元数。
-            num_classes (int): 出力クラスの数。
-            channels (int): 畳み込み層のチャネル数。
-            dropout (float): ドロップアウト率。
-        """
+    def __init__(self, input_hand_dim: int, channels: int, dropout: float):
         super().__init__()
-        
-        # 入力特徴量を畳み込み層のチャネル数に射影する
-        self.input_proj = nn.Linear(input_dim, channels)
-
-        # 1D畳み込みブロック
+        self.input_proj = nn.Linear(input_hand_dim, channels)
         self.conv_blocks = nn.Sequential(
-            # Block 1
             nn.Conv1d(channels, channels, kernel_size=3, padding=1),
             nn.BatchNorm1d(channels),
             nn.ReLU(),
             nn.Dropout(dropout),
-            # Block 2
             nn.Conv1d(channels, channels, kernel_size=3, padding=1),
             nn.BatchNorm1d(channels),
             nn.ReLU(),
             nn.Dropout(dropout),
-            # Block 3
             nn.Conv1d(channels, channels, kernel_size=3, padding=1),
             nn.BatchNorm1d(channels),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
 
-        # 最終的なクラス分類のための出力層
-        self.output_proj = nn.Linear(channels, num_classes)
+    def forward(self, x: Tensor) -> Tensor:
+        # x: (B, T, F_hand)
+        x = self.input_proj(x) # (B, T, C)
+        x = x.permute(0, 2, 1) # (B, C, T)
+        x = self.conv_blocks(x) # (B, C, T)
+        x = torch.mean(x, dim=2) # Global Average Pooling (B, C)
+        return x
+
+
+class TwoStreamCNN(nn.Module):
+    """
+    左右の手の特徴量を別々に処理し、統合する1D-CNNモデル。
+    """
+    def __init__(
+        self,
+        input_hand_dim: int = 193, # 左右それぞれの手の特徴量次元 (63*3 + 4)
+        num_classes: int = 20,
+        channels: int = 128,
+        dropout: float = 0.2
+    ):
+        """
+        Args:
+            input_hand_dim (int): 片手の入力特徴量の次元数。
+            num_classes (int): 出力クラスの数。
+            channels (int): 畳み込み層のチャネル数。
+            dropout (float): ドロップアウト率。
+        """
+        super().__init__()
+        
+        # 左右の手それぞれにエンコーダを用意 (重みは共有)
+        self.hand_encoder = HandEncoder(input_hand_dim, channels, dropout)
+
+        # 統合後の特徴量からクラスを予測する層
+        # 左右のエンコーダ出力 (channels * 2) から num_classes へ
+        self.output_proj = nn.Linear(channels * 2, num_classes)
 
     def forward(self, x: Tensor, lengths: Tensor) -> Tensor:
         """
         順伝播処理。
 
         Args:
-            x (Tensor): 入力テンソル。形状: (Batch, Time, Features)
-            lengths (Tensor): 各シーケンスの元の長さ。このモデルでは未使用だが、
-                              インターフェースの互換性のために受け取る。
+            x (Tensor): 入力テンソル。形状: (Batch, Time, Features) -> (B, T, 386)
+            lengths (Tensor): 各シーケンスの元の長さ。
 
         Returns:
             Tensor: 分類結果のロジット。形状: (Batch, num_classes)
         """
-        # (B, T, F) -> (B, T, C)
-        x = self.input_proj(x)
+        # 入力特徴量を左右の手に分割
+        # x: (B, T, 386)
+        left_features = x[:, :, :193]  # (B, T, 193)
+        right_features = x[:, :, 193:] # (B, T, 193)
+
+        # 左右の手をそれぞれエンコード
+        encoded_left = self.hand_encoder(left_features)   # (B, C)
+        encoded_right = self.hand_encoder(right_features) # (B, C)
+
+        # 左右のエンコード結果を連結
+        combined_features = torch.cat([encoded_left, encoded_right], dim=1) # (B, 2 * C)
         
-        # Conv1dは (B, C, T) を期待するため、次元を入れ替える
-        # (B, T, C) -> (B, C, T)
-        x = x.permute(0, 2, 1)
+        # 最終的なクラス分類
+        logits = self.output_proj(combined_features) # (B, num_classes)
         
-        # 畳み込みブロックを適用
-        # (B, C, T) -> (B, C, T)
-        x = self.conv_blocks(x)
-        
-        # Global Average Pooling (時間軸 T に沿って平均をとる)
-        # (B, C, T) -> (B, C)
-        x = torch.mean(x, dim=2)
-        
-        # 出力層
-        # (B, C) -> (B, num_classes)
-        x = self.output_proj(x)
-        
-        return x
+        return logits
