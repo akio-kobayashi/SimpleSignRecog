@@ -1,0 +1,46 @@
+# データ関連の設定
+data:
+  metadata_path: ./output_data/metadata.csv
+  source_landmark_dir: ./processed_data # 生のランドマークNPZファイルが格納されているディレクトリ
+  num_folds: 5                  # K-Foldの分割数 (K)
+  validation_split_ratio: 0.1   # 学習データから検証データを切り出す割合
+  batch_size: 32
+  use_bucketing: true
+  augmentation:
+    augment_flip: true
+    augment_rotate: true
+    augment_noise: true
+    flip_prob: 0.5 # 左右反転の確率
+
+# モデルのアーキテクチャ設定
+model:
+  input_dim: 386
+  num_classes: 20
+  channels: 128
+  dropout: 0.2
+
+# 最適化手法の設定
+optimizer:
+  lr: 0.001
+
+# 学習率スケジューラの設定
+scheduler:
+  max_lr: 0.001
+  # total_steps は train.py 内で自動計算されます
+
+# PyTorch Lightning Trainerの設定
+trainer:
+  max_epochs: 50
+  accelerator: auto
+
+# モデルチェックポイントの設定
+checkpoint:
+  dirpath: ./checkpoints/
+  monitor: "val_loss"
+  save_top_k: 1
+  mode: "min"
+
+# ロガーの設定
+logger:
+  save_dir: ./logs/
+  name: sign_recognition_experiment

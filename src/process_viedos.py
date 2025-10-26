@@ -60,7 +60,7 @@ def extract_landmarks_from_video(
     max_num_hands=2,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
-) -> tuple[np.ndarray, bool]:
+) -> tuple[np.ndarray, bool, int]:
     """
     動画からMediaPipe Handsのランドマークを抽出し、NumPy配列として返す。
     手が検出されないフレームや手にはNaNを格納する。
@@ -72,7 +72,7 @@ def extract_landmarks_from_video(
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"[WARN] 失敗: {video_path} を開けませんでした。", file=sys.stderr)
-        return np.array([]), False
+        return np.array([]), False, 0
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
@@ -174,9 +174,9 @@ def extract_landmarks_from_video(
             print(f"[OK] 描画済み動画: {out_draw_path}")
 
     if not all_frame_landmarks:
-        return np.array([]), had_inference
+        return np.array([]), had_inference, total_frames
 
-    return np.array(all_frame_landmarks, dtype=np.float32), had_inference
+    return np.array(all_frame_landmarks, dtype=np.float32), had_inference, total_frames
 
 def main():
     ap = argparse.ArgumentParser(description="MediaPipe Handsで動画から手指ランドマークを抽出し、NPZとメタデータCSVを出力")
@@ -218,7 +218,7 @@ def main():
 
         for video_path in videos_in_class:
             print(f"動画を処理中: {video_path}")
-            landmark_data, had_inference = extract_landmarks_from_video(
+            landmark_data, had_inference, num_frames = extract_landmarks_from_video(
                 video_path,
                 draw=args.draw,
                 draw_dir=draw_dir,
@@ -241,6 +241,7 @@ def main():
                     "class_label": class_id,
                     "original_video_path": str(video_path),
                     "quality_flag": quality_flag,
+                    "num_frames": num_frames,
                 })
             else:
                 print(f"[WARN] ランドマークデータが抽出されませんでした: {video_path}")

@@ -17,11 +17,68 @@ import numpy as np
 import pandas as pd
 import sys
 from scipy.signal import savgol_filter
+from scipy.spatial.transform import Rotation as R
 
 # ランドマーク配列のスライス定義
 NUM_LANDMARKS_PER_HAND = 21
 LEFT_HAND_OFFSET = 0
 RIGHT_HAND_OFFSET = NUM_LANDMARKS_PER_HAND * 3
+
+def augment_rotate(landmarks: np.ndarray) -> np.ndarray:
+    """Applies a random rotation to each hand's point cloud."""
+    augmented_landmarks = landmarks.copy()
+    num_frames = landmarks.shape[0]
+
+    for i in range(num_frames):
+        for hand_offset in [LEFT_HAND_OFFSET, RIGHT_HAND_OFFSET]:
+            hand_slice = slice(hand_offset, hand_offset + NUM_LANDMARKS_PER_HAND * 3)
+            hand_data = augmented_landmarks[i, hand_slice].reshape(NUM_LANDMARKS_PER_HAND, 3)
+
+            if np.all(np.isnan(hand_data)):
+                continue
+
+            # Center the hand around the wrist before rotating
+            wrist_coords = hand_data[0].copy()
+            centered_hand = hand_data - wrist_coords
+
+            # Generate a random small rotation
+            random_angles = np.random.uniform(-15, 15, 3) # Max 15 degrees rotation on each axis
+            rotation = R.from_euler('xyz', random_angles, degrees=True)
+            
+            # Apply rotation
+            rotated_hand = rotation.apply(centered_hand)
+
+            # Add the wrist coordinates back
+            final_hand = rotated_hand + wrist_coords
+            
+            augmented_landmarks[i, hand_slice] = final_hand.flatten()
+            
+    return augmented_landmarks
+
+def augment_noise(landmarks: np.ndarray, scale=0.001) -> np.ndarray:
+    """Adds Gaussian noise to the landmarks."""
+    noise = np.random.normal(0, scale, landmarks.shape)
+    nan_mask = np.isnan(landmarks)
+    noise[nan_mask] = 0
+    return landmarks + noise
+
+def augment_flip(landmarks: np.ndarray) -> np.ndarray:
+    """Horizontally flips the landmarks and swaps hand labels."""
+    flipped_landmarks = landmarks.copy()
+    
+    # Swap Left and Right hand data
+    left_hand_data = flipped_landmarks[:, LEFT_HAND_OFFSET : LEFT_HAND_OFFSET + NUM_LANDMARKS_PER_HAND * 3].copy()
+    right_hand_data = flipped_landmarks[:, RIGHT_HAND_OFFSET : RIGHT_HAND_OFFSET + NUM_LANDMARKS_PER_HAND * 3].copy()
+    
+    flipped_landmarks[:, LEFT_HAND_OFFSET : LEFT_HAND_OFFSET + NUM_LANDMARKS_PER_HAND * 3] = right_hand_data
+    flipped_landmarks[:, RIGHT_HAND_OFFSET : RIGHT_HAND_OFFSET + NUM_LANDMARKS_PER_HAND * 3] = left_hand_data
+
+    # Invert the x-coordinate
+    # x-coordinates are at indices 0, 3, 6, ...
+    flipped_landmarks[:, 0::3] *= -1
+    
+    return flipped_landmarks
+
 
 def interpolate_missing_data(landmarks: np.ndarray) -> np.ndarray:
     """
@@ -176,52 +233,4 @@ def calculate_features(landmarks: np.ndarray) -> np.ndarray:
     
     return final_features
 
-# --- メインの実行部分 ---
 
-def main():
-    ap = argparse.ArgumentParser(description="ランドマークデータから特徴量を抽出する")
-    ap.add_argument("-i", "--input_npz_path", required=True, type=Path,
-                    help="入力NPZファイルのパス")
-    ap.add_argument("-o", "--output_npz_path", required=True, type=Path,
-                    help="特徴量抽出後のNPZファイルの保存パス")
-    args = ap.parse_args()
-
-    if not args.input_npz_path.exists():
-        print(f"[ERROR] Input file not found: {args.input_npz_path}", file=sys.stderr)
-        sys.exit(1)
-
-    # 1. データの読み込み
-    with np.load(args.input_npz_path) as data:
-        # correct_inferred_data.py を通した場合、キーは 'landmarks' のまま
-        # このスクリプトで一度処理した場合、キーは 'features' になる
-        if 'features' in data:
-            raw_landmarks = data['features']
-        else:
-            raw_landmarks = data['landmarks']
-
-    print(f"[INFO] Loaded {raw_landmarks.shape[0]} frames from {args.input_npz_path}")
-
-    # 2. 欠損値の補間
-    interpolated_landmarks = interpolate_missing_data(raw_landmarks)
-    print("[INFO] Step 1/4: Interpolated missing data.")
-
-    # 3. 座標の正規化
-    normalized_landmarks = normalize_landmarks(interpolated_landmarks)
-    print("[INFO] Step 2/4: Normalized landmarks.")
-
-    # 4. 平滑化
-    smoothed_landmarks = smooth_landmarks(normalized_landmarks)
-    print("[INFO] Step 3/4: Smoothed landmarks using Savitzky-Golay filter.")
-
-    # 5. 特徴量計算
-    final_features = calculate_features(smoothed_landmarks)
-    print("[INFO] Step 4/4: Calculated final features (position, velocity, acceleration, geometry).")
-
-    # 6. 保存
-    args.output_npz_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(args.output_npz_path, features=final_features)
-    print(f"[SUCCESS] Saved final features ({final_features.shape}) to {args.output_npz_path}")
-
-
-if __name__ == "__main__":
-    main()
