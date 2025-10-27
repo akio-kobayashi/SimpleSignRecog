@@ -1,7 +1,7 @@
 # データ関連の設定
 data:
   metadata_path: ./output_data/metadata.csv
-  source_landmark_dir: ./processed_data # 生のランドマークNPZファイルが格納されているディレクトリ
+  source_landmark_dir: .
   num_folds: 5                  # K-Foldの分割数 (K)
   validation_split_ratio: 0.1   # 学習データから検証データを切り出す割合
   batch_size: 32

@@ -33,14 +33,13 @@ def calculate_distance(p1, p2):
 def correct_handedness_temporally(landmarks: np.ndarray) -> np.ndarray:
     """
     時系列情報を用いて、ランドマークデータの左右の入れ替わりを修正する。
-
-    Args:
-        landmarks (np.ndarray): (フレーム数, 126) のランドマーク配列。
-
-    Returns:
-        np.ndarray: 修正後のランドマーク配列。
+    1フレーム前の手首位置との距離を元に、現在のフレームで手が入れ替わっているかを判定し、修正する。
+    片手しか検出されていない場合も考慮し、より頑健な判定を行う。
     """
     num_frames = landmarks.shape[0]
+    if num_frames == 0:
+        return landmarks
+        
     corrected_landmarks = np.copy(landmarks)
     
     last_left_wrist = None
@@ -58,34 +57,65 @@ def correct_handedness_temporally(landmarks: np.ndarray) -> np.ndarray:
         current_left_wrist = left_hand_data[0:3] if left_present else None
         current_right_wrist = right_hand_data[0:3] if right_present else None
 
-        # 両手が検出され、かつ前のフレームでも両手が検出されていた場合にスワップをチェック
-        if left_present and right_present and last_left_wrist is not None and last_right_wrist is not None:
-            
-            # 現在の左右の手と、前のフレームの左右の手の距離を計算
-            dist_ll = calculate_distance(current_left_wrist, last_left_wrist)
-            dist_rr = calculate_distance(current_right_wrist, last_right_wrist)
-            
-            dist_lr = calculate_distance(current_left_wrist, last_right_wrist)
-            dist_rl = calculate_distance(current_right_wrist, last_left_wrist)
+        # --- スワップ判定と修正ロジック ---
 
-            # スワップしない場合のコスト vs スワップした場合のコスト
-            cost_no_swap = dist_ll + dist_rr
-            cost_swap = dist_lr + dist_rl
-
-            if cost_swap < cost_no_swap:
-                # スワップしたと判断し、データを入れ替える
-                # print(f"  [INFO] Frame {i}: Handedness swap detected and corrected.")
-                corrected_landmarks[i, LEFT_HAND_SLICE] = right_hand_data
-                corrected_landmarks[i, RIGHT_HAND_SLICE] = left_hand_data
+        # Case 1: 現在のフレームで両手が検出された
+        if left_present and right_present:
+            # Subcase 1.1: 前のフレームでも両手が検出されていた (2 -> 2)
+            if last_left_wrist is not None and last_right_wrist is not None:
+                cost_no_swap = calculate_distance(current_left_wrist, last_left_wrist) + calculate_distance(current_right_wrist, last_right_wrist)
+                cost_swap = calculate_distance(current_left_wrist, last_right_wrist) + calculate_distance(current_right_wrist, last_left_wrist)
                 
-                # 入れ替えたので、現在のリストも更新
-                current_left_wrist, current_right_wrist = current_right_wrist, current_left_wrist
+                if cost_swap < cost_no_swap:
+                    # スワップしたと判断し、データを入れ替える
+                    corrected_landmarks[i, LEFT_HAND_SLICE] = right_hand_data
+                    corrected_landmarks[i, RIGHT_HAND_SLICE] = left_hand_data
+                    # currentの手首位置もスワップして後続の処理に使う
+                    current_left_wrist, current_right_wrist = current_right_wrist, current_left_wrist
+            
+            # Subcase 1.2: 前のフレームでは左手のみ検出されていた (1 -> 2)
+            elif last_left_wrist is not None and last_right_wrist is None:
+                if calculate_distance(current_right_wrist, last_left_wrist) < calculate_distance(current_left_wrist, last_left_wrist):
+                    # 現在の右手が前の左手に近い -> スワップ
+                    corrected_landmarks[i, LEFT_HAND_SLICE] = right_hand_data
+                    corrected_landmarks[i, RIGHT_HAND_SLICE] = left_hand_data
+                    current_left_wrist, current_right_wrist = current_right_wrist, current_left_wrist
 
-        # 次のフレームのために、現在のフレームの手首位置を保存
-        if left_present:
-            last_left_wrist = current_left_wrist
-        if right_present:
-            last_right_wrist = current_right_wrist
+            # Subcase 1.3: 前のフレームでは右手のみ検出されていた (1 -> 2)
+            elif last_right_wrist is not None and last_left_wrist is None:
+                if calculate_distance(current_left_wrist, last_right_wrist) < calculate_distance(current_right_wrist, last_right_wrist):
+                    # 現在の左手が前の右手に近い -> スワップ
+                    corrected_landmarks[i, LEFT_HAND_SLICE] = right_hand_data
+                    corrected_landmarks[i, RIGHT_HAND_SLICE] = left_hand_data
+                    current_left_wrist, current_right_wrist = current_right_wrist, current_left_wrist
+
+        # Case 2: 現在のフレームで左手のみが検出された
+        elif left_present and not right_present:
+            # Subcase 2.1: 前のフレームでは右手のみが検出されていた (1 -> 1, ラベル変化)
+            if last_right_wrist is not None and last_left_wrist is None:
+                # 手が1つしかなく、ラベルがRight->Leftに変わった場合、同一の手が誤ラベルされた可能性が高い
+                # データを右手のスロットに移動する
+                corrected_landmarks[i, RIGHT_HAND_SLICE] = left_hand_data
+                corrected_landmarks[i, LEFT_HAND_SLICE].fill(np.nan)
+                # currentの手首位置もスワップ
+                current_right_wrist = current_left_wrist
+                current_left_wrist = None
+
+        # Case 3: 現在のフレームで右手のみが検出された
+        elif right_present and not left_present:
+            # Subcase 3.1: 前のフレームでは左手のみが検出されていた (1 -> 1, ラベル変化)
+            if last_left_wrist is not None and last_right_wrist is None:
+                # 手が1つしかなく、ラベルがLeft->Rightに変わった場合
+                # データを左手のスロットに移動する
+                corrected_landmarks[i, LEFT_HAND_SLICE] = right_hand_data
+                corrected_landmarks[i, RIGHT_HAND_SLICE].fill(np.nan)
+                # currentの手首位置もスワップ
+                current_left_wrist = current_right_wrist
+                current_right_wrist = None
+
+        # --- 次のフレームのために、現在の（修正後の）手首位置を保存 ---
+        last_left_wrist = current_left_wrist
+        last_right_wrist = current_right_wrist
             
     return corrected_landmarks
 
@@ -120,7 +150,8 @@ def main():
     for index, row in tqdm(inferred_df.iterrows(), total=inferred_df.shape[0], desc="Correcting files"):
         npz_relative_path = row['npz_path']
         npz_full_path = args.input_base_dir / npz_relative_path
-        
+        output_path = args.output_corrected_dir / npz_relative_path
+
         if not npz_full_path.exists():
             print(f"\n[WARN] NPZファイルが見つかりません: {npz_full_path}", file=sys.stderr)
             continue
@@ -129,20 +160,26 @@ def main():
             with np.load(npz_full_path) as data:
                 landmarks = data['landmarks']
             
-            # print(f"\nProcessing: {npz_relative_path}")
-            
             # 修正処理を実行
             corrected_landmarks = correct_handedness_temporally(landmarks)
 
             # 新しいパスに保存
-            output_path = args.output_corrected_dir / npz_relative_path
             output_path.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(output_path, landmarks=corrected_landmarks)
-            
-            # print(f"  [OK] Saved corrected file to: {output_path}")
 
         except Exception as e:
             print(f"\n[ERROR] ファイル処理中にエラーが発生しました: {npz_full_path}\n{e}", file=sys.stderr)
+            print(f"  [INFO] 処理に失敗したため、元のファイルをコピーします: {npz_full_path} -> {output_path}")
+            try:
+                # Ensure parent directory exists before copying
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                # Copy the original file over
+                with open(npz_full_path, 'rb') as f_in:
+                    content = f_in.read()
+                with open(output_path, 'wb') as f_out:
+                    f_out.write(content)
+            except Exception as copy_e:
+                print(f"  [FATAL] 元のファイルのコピーに失敗しました: {copy_e}", file=sys.stderr)
 
     print("[INFO] すべての処理が完了しました。")
 
