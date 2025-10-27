@@ -93,6 +93,12 @@ class SignDataset(torch.utils.data.Dataset):
 
         # 5. 特徴量計算
         final_features = calculate_features(processed_landmarks)
+
+        # 6. NaN/infチェック: これらが損失計算時にnanを引き起こすのを防ぐ
+        if np.any(np.isnan(final_features)) or np.any(np.isinf(final_features)):
+            # 不安定な特徴量が見つかった場合に警告（デバッグ用）
+            # print(f"\n[WARN] NaN or Inf found in features for item {idx} ({item_row['npz_path']}). Replacing with 0.")
+            final_features = np.nan_to_num(final_features, nan=0.0, posinf=0.0, neginf=0.0)
         
         # ラベルを取得 (1-20 -> 0-19)
         label = int(item_row['class_label']) - 1
