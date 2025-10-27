@@ -24,7 +24,10 @@ class Solver(pl.LightningModule):
         self.save_hyperparameters()
 
         # 1. Instantiate the Model
-        self.model = TwoStreamCNN(**self.config['model'])
+        model_config = self.config['model'].copy()
+        input_dim = model_config.pop('input_dim', 386)
+        model_config['input_hand_dim'] = input_dim // 2
+        self.model = TwoStreamCNN(**model_config)
 
         # 2. Define the loss function
         self.criterion = nn.CrossEntropyLoss()
