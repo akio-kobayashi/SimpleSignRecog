@@ -23,6 +23,8 @@ from scipy.spatial.transform import Rotation as R
 NUM_LANDMARKS_PER_HAND = 21
 LEFT_HAND_OFFSET = 0
 RIGHT_HAND_OFFSET = NUM_LANDMARKS_PER_HAND * 3
+LEFT_HAND_SLICE = slice(LEFT_HAND_OFFSET, LEFT_HAND_OFFSET + NUM_LANDMARKS_PER_HAND * 3)
+RIGHT_HAND_SLICE = slice(RIGHT_HAND_OFFSET, RIGHT_HAND_OFFSET + NUM_LANDMARKS_PER_HAND * 3)
 
 def augment_rotate(landmarks: np.ndarray) -> np.ndarray:
     """Applies a random rotation to each hand's point cloud."""
