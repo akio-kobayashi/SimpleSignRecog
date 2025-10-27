@@ -1,4 +1,5 @@
 import yaml
+import random
 from argparse import ArgumentParser
 from pathlib import Path
 import numpy as np
@@ -13,10 +14,38 @@ from torch.utils.data import DataLoader
 from src.dataset import SignDataset, BucketBatchSampler, data_processing
 from src.solver import Solver
 
+# --- Reproducibility ---
+def set_seed(seed: int):
+    """Sets the seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        # Ensure deterministic operations
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+def seed_worker(worker_id):
+    """Seeds worker processes for DataLoader."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
 def main(config: dict, checkpoint_path: str | None = None):
     """
     Main K-Fold Cross-Validation training pipeline.
     """
+    # --- 0. Set Seed ---
+    if "seed" in config:
+        set_seed(config["seed"])
+        print(f"--- Seed set to {config['seed']} for reproducibility ---")
+    
+    g = torch.Generator()
+    if "seed" in config:
+        g.manual_seed(config["seed"])
+
     # --- 1. Load Full Dataset ---
     print("--- Loading Full Dataset ---")
     data_config = config['data']
@@ -24,7 +53,7 @@ def main(config: dict, checkpoint_path: str | None = None):
 
     # --- 2. K-Fold Cross-Validation Setup ---
     num_folds = data_config.get('num_folds', 5)
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
 
     all_fold_metrics = []
 
@@ -35,11 +64,10 @@ def main(config: dict, checkpoint_path: str | None = None):
         train_val_df = metadata_df.iloc[train_val_indices].reset_index(drop=True)
         test_df = metadata_df.iloc[test_indices].reset_index(drop=True)
 
-        # Split train_val_df further into train and validation
         train_df, val_df = train_test_split(
             train_val_df,
             test_size=data_config['validation_split_ratio'],
-            random_state=42,
+            random_state=config.get('seed', 42),
             stratify=train_val_df['class_label']
         )
 
@@ -49,7 +77,6 @@ def main(config: dict, checkpoint_path: str | None = None):
         print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
         # --- 2b. Create Datasets and DataLoaders for this fold ---
-        # Augmentation flags from config
         aug_config = data_config.get('augmentation', {})
 
         train_dataset = SignDataset(
@@ -64,36 +91,33 @@ def main(config: dict, checkpoint_path: str | None = None):
         val_dataset = SignDataset(
             metadata_df=val_df,
             data_base_dir=data_config['source_landmark_dir'],
-            sort_by_length=False, # No sorting for validation
-            augment_flip=False, augment_rotate=False, augment_noise=False # No augmentation for validation
+            sort_by_length=False,
+            augment_flip=False, augment_rotate=False, augment_noise=False
         )
         test_dataset = SignDataset(
             metadata_df=test_df,
             data_base_dir=data_config['source_landmark_dir'],
-            sort_by_length=False, # No sorting for test
-            augment_flip=False, augment_rotate=False, augment_noise=False # No augmentation for test
+            sort_by_length=False,
+            augment_flip=False, augment_rotate=False, augment_noise=False
         )
 
         if data_config.get('use_bucketing', False):
             train_sampler = BucketBatchSampler(train_dataset, batch_size=data_config['batch_size'])
-            train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=data_processing, num_workers=4)
+            train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=data_processing, num_workers=4, worker_init_fn=seed_worker)
         else:
-            train_loader = DataLoader(train_dataset, batch_size=data_config['batch_size'], shuffle=True, collate_fn=data_processing, num_workers=4)
+            train_loader = DataLoader(train_dataset, batch_size=data_config['batch_size'], shuffle=True, collate_fn=data_processing, num_workers=4, worker_init_fn=seed_worker, generator=g)
 
         valid_loader = DataLoader(val_dataset, batch_size=data_config['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=4)
         test_loader = DataLoader(test_dataset, batch_size=data_config['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=4)
 
         # --- 2c. Initialize Model and Trainer for this fold ---
-        # Inject total_steps for this fold's training into scheduler config
         if 'scheduler' in config and 'total_steps' not in config['scheduler']:
             total_steps = (len(train_dataset) // data_config['batch_size']) * config['trainer']['max_epochs']
             config['scheduler']['total_steps'] = total_steps
             print(f"Scheduler total_steps calculated: {total_steps}")
 
-        # Re-initialize model for each fold to ensure fresh weights
         model = Solver(config)
 
-        # Setup logger and checkpointing for this fold
         logger = TensorBoardLogger(**config["logger"], version=f"fold_{fold}")
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             **config["checkpoint"],
@@ -111,7 +135,6 @@ def main(config: dict, checkpoint_path: str | None = None):
         trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
         print(f"--- Testing Fold {fold + 1} ---")
-        # trainer.test() returns a list of dictionaries
         test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')
         all_fold_metrics.append(test_results[0])
 

@@ -1,4 +1,5 @@
 # データ関連の設定
+seed: 42
 data:
   metadata_path: ./output_data/metadata.csv
   source_landmark_dir: .
