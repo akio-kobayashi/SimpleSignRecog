@@ -33,6 +33,7 @@ scheduler:
 trainer:
   max_epochs: 50
   accelerator: auto
+  log_every_n_steps: 1
 
 # モデルチェックポイントの設定
 checkpoint:
@@ -45,3 +46,8 @@ checkpoint:
 logger:
   save_dir: ./logs/
   name: sign_recognition_experiment
+
+# 出力ファイルの設定
+output:
+  svm_results_path: results_svm.csv
+  nn_results_path: results_nn.csv

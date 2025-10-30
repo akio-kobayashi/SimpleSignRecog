@@ -1,0 +1,171 @@
+
+
+import yaml
+import random
+from argparse import ArgumentParser
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from sklearn.metrics import classification_report, accuracy_score
+from tqdm import tqdm
+
+# Import the custom dataset from the existing src directory
+from src.dataset import SignDataset
+
+def set_seed(seed: int):
+    """Sets the seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+
+def extract_statistical_features(features: np.ndarray) -> np.ndarray:
+    """
+    Extracts statistical features from a time-series of landmarks.
+    Input shape: (time, num_features)
+    Output shape: (1, num_features * 5)
+    """
+    if features.shape[0] == 0:
+        # Handle empty sequences if they occur
+        return np.zeros(features.shape[1] * 5)
+        
+    mean = np.mean(features, axis=0)
+    std = np.std(features, axis=0)
+    min_vals = np.min(features, axis=0)
+    max_vals = np.max(features, axis=0)
+    median = np.median(features, axis=0)
+    
+    # Concatenate all statistical features into a single feature vector
+    return np.concatenate([mean, std, min_vals, max_vals, median])
+
+def main(config: dict):
+    """
+    Main K-Fold Cross-Validation pipeline for the SVM model.
+    """
+    # --- 0. Set Seed ---
+    if "seed" in config:
+        set_seed(config["seed"])
+        print(f"--- Seed set to {config['seed']} for reproducibility ---")
+
+    # --- 1. Load Full Dataset and Extract Features ---
+    print("--- Loading Full Dataset and Extracting Features for SVM ---")
+    data_config = config['data']
+    metadata_df = pd.read_csv(data_config['metadata_path'])
+
+    # Create the dataset but without any augmentations for fair evaluation
+    dataset = SignDataset(
+        metadata_df=metadata_df,
+        data_base_dir=data_config['source_landmark_dir'],
+        sort_by_length=False,
+        augment_flip=False,
+        augment_rotate=False,
+        augment_noise=False,
+    )
+
+    X_list = []
+    y_list = []
+    # Use tqdm for a progress bar as this can take time
+    for i in tqdm(range(len(dataset)), desc="Extracting features"):
+        features_tensor, label = dataset[i]
+        features_np = features_tensor.numpy()
+        
+        # Extract statistical features from the time-series data
+        stat_features = extract_statistical_features(features_np)
+        
+        X_list.append(stat_features)
+        y_list.append(label)
+
+    X = np.array(X_list)
+    y = np.array(y_list)
+    
+    print(f"--- Feature extraction complete. Feature matrix shape: {X.shape} ---")
+
+    # --- 2. K-Fold Cross-Validation Setup ---
+    num_folds = data_config.get('num_folds', 5)
+    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
+
+    all_fold_metrics = []
+
+    for fold, (train_indices, test_indices) in enumerate(skf.split(X, y)):
+        print(f"\n===== FOLD {fold + 1} / {num_folds} =====")
+
+        # --- 2a. Split data for this fold ---
+        X_train, X_test = X[train_indices], X[test_indices]
+        y_train, y_test = y[train_indices], y[test_indices]
+
+        # --- 2b. Scale Features ---
+        # It's crucial to fit the scaler ONLY on the training data
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        # --- 2c. Train SVM Model ---
+        print("--- Training SVM model ---")
+        # Using probability=True to get probabilities for other metrics if needed, but it slows down training
+        svm_model = SVC(kernel='rbf', random_state=config.get('seed', 42))
+        svm_model.fit(X_train_scaled, y_train)
+
+        # --- 2d. Test this fold ---
+        print(f"--- Testing Fold {fold + 1} ---")
+        y_pred = svm_model.predict(X_test_scaled)
+        
+        # Generate report
+        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+        accuracy = accuracy_score(y_test, y_pred)
+        
+        fold_metrics = {
+            'test_accuracy': accuracy,
+            'test_f1': report['macro avg']['f1-score'],
+            'test_precision': report['macro avg']['precision'],
+            'test_recall': report['macro avg']['recall']
+        }
+        all_fold_metrics.append(fold_metrics)
+        
+        print(f"Fold {fold + 1} Accuracy: {accuracy:.4f}")
+        print(f"Fold {fold + 1} F1-Score (Macro): {report['macro avg']['f1-score']:.4f}")
+
+    # --- 3. Aggregate and Save/Print Final Results ---
+    print("\n===== SVM CROSS-VALIDATION FINAL RESULTS ======")
+    
+    if not all_fold_metrics:
+        print("No test results found to generate a report.")
+        return
+
+    results_df = pd.DataFrame(all_fold_metrics)
+    results_df.loc['average'] = results_df.mean()
+
+    # Add fold column
+    results_df.index.name = 'fold'
+    results_df = results_df.reset_index()
+    results_df['fold'] = results_df['fold'].apply(lambda x: str(x + 1) if isinstance(x, int) else x)
+
+    # --- 4. Save or Print Results ---
+    output_path = config.get('output', {}).get('svm_results_path')
+    if output_path:
+        file_ext = Path(output_path).suffix
+        try:
+            if file_ext == '.csv':
+                results_df.to_csv(output_path, index=False, float_format='%.4f')
+                print(f"\nResults successfully saved to {output_path}")
+            else:
+                print(f"\nUnsupported output format '{file_ext}'. Printing to console instead.")
+                print(results_df.to_string(float_format='%.4f', index=False))
+        except Exception as e:
+            print(f"\nError saving results to {output_path}: {e}")
+            print("Printing to console instead:")
+            print(results_df.to_string(float_format='%.4f', index=False))
+    else:
+        print("\n--- Average Metrics Across Folds ---")
+        print(results_df.to_string(float_format='%.4f', index=False))
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the YAML configuration file.")
+    args = parser.parse_args()
+
+    with open(args.config, "r") as yf:
+        config = yaml.safe_load(yf)
+
+    main(config)
+

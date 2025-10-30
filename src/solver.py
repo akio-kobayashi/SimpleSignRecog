@@ -39,9 +39,9 @@ class Solver(pl.LightningModule):
         
         # Metrics for the test step
         self.test_accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
-        self.test_f1 = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average='macro')
-        self.test_precision = torchmetrics.Precision(task="multiclass", num_classes=num_classes, average='macro')
-        self.test_recall = torchmetrics.Recall(task="multiclass", num_classes=num_classes, average='macro')
+        self.test_f1 = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average='macro', zero_division=0)
+        self.test_precision = torchmetrics.Precision(task="multiclass", num_classes=num_classes, average='macro', zero_division=0)
+        self.test_recall = torchmetrics.Recall(task="multiclass", num_classes=num_classes, average='macro', zero_division=0)
         self.test_cm = torchmetrics.ConfusionMatrix(task="multiclass", num_classes=num_classes)
 
         # Lists to store predictions and labels for the entire test set

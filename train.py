@@ -34,7 +34,7 @@ def seed_worker(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-def main(config: dict, output_path: str | None = None, checkpoint_path: str | None = None):
+def main(config: dict, checkpoint_path: str | None = None):
     """
     Main K-Fold Cross-Validation training pipeline.
     """
@@ -227,6 +227,7 @@ def main(config: dict, output_path: str | None = None, checkpoint_path: str | No
     results_df['fold'] = results_df['fold'].apply(lambda x: str(x + 1) if isinstance(x, int) else x)
 
     # --- 4. Save or Print Results ---
+    output_path = config.get('output', {}).get('nn_results_path')
     if output_path:
         file_ext = Path(output_path).suffix
         try:
@@ -252,7 +253,6 @@ def main(config: dict, output_path: str | None = None, checkpoint_path: str | No
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml", help="YAML形式の設定ファイル")
-    parser.add_argument("--output", type=str, default=None, help="結果を保存するファイルパス (e.g., results.csv, results.md)")
     parser.add_argument("--checkpoint", type=str, default=None, help="モデルのチェックポイント（CVでは非推奨）")
     args = parser.parse_args()
 
@@ -261,4 +261,4 @@ if __name__ == "__main__":
     with open(args.config, "r") as yf:
         config = yaml.safe_load(yf)
 
-    main(config, output_path=args.output, checkpoint_path=args.checkpoint)
+    main(config, checkpoint_path=args.checkpoint)
