@@ -8,6 +8,7 @@ import pandas as pd
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
 
 # Import our custom modules
@@ -50,12 +51,21 @@ def main(config: dict, checkpoint_path: str | None = None):
     print("--- Loading Full Dataset ---")
     data_config = config['data']
     metadata_df = pd.read_csv(data_config['metadata_path'])
+    
+    # Create a mapping from class index to a readable name if available
+    # This assumes the CSV has 'class_label' (int) and 'class_name' (str)
+    class_mapping = None
+    if 'class_name' in metadata_df.columns:
+        class_mapping = pd.Series(metadata_df['class_name'].values, index=metadata_df['class_label']).to_dict()
+        print(f"Found {len(class_mapping)} classes.")
+
 
     # --- 2. K-Fold Cross-Validation Setup ---
     num_folds = data_config.get('num_folds', 5)
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
 
     all_fold_metrics = []
+    all_fold_reports = []
 
     for fold, (train_val_indices, test_indices) in enumerate(skf.split(metadata_df, metadata_df['class_label'])):
         print(f"\n===== FOLD {fold + 1} / {num_folds} =====")
@@ -118,10 +128,14 @@ def main(config: dict, checkpoint_path: str | None = None):
 
         model = Solver(config)
 
-        logger = TensorBoardLogger(**config["logger"], version=f"fold_{fold}")
+        # Define a unique directory for this fold's logs and checkpoints
+        fold_log_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"]
+        logger = TensorBoardLogger(save_dir=str(fold_log_dir.parent), name=config["logger"]["name"], version=f"fold_{fold}")
+        
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            dirpath=str(Path(logger.log_dir) / "checkpoints"),
             **config["checkpoint"],
-            filename=f"{{epoch}}-{{val_loss:.2f}}-fold_{fold}"
+            filename=f"{{epoch}}-{{val_loss:.2f}}"
         )
 
         trainer = pl.Trainer(
@@ -138,15 +152,56 @@ def main(config: dict, checkpoint_path: str | None = None):
         test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')
         all_fold_metrics.append(test_results[0])
 
-    # --- 3. Aggregate and Print Final Results ---
-    print("\n===== CROSS-VALIDATION FINAL RESULTS =====")
-    avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
+        # --- 2e. Generate and Store Detailed Report for this fold ---
+        y_true = model.test_labels.cpu().numpy()
+        y_pred = model.test_preds.cpu().numpy()
+        
+        report = classification_report(y_true, y_pred, output_dict=True)
+        report_df = pd.DataFrame(report).transpose()
+        
+        # Add class names if available
+        if class_mapping:
+            report_df['class_name'] = report_df.index.map(lambda x: class_mapping.get(int(x), x))
 
+        report_df['fold'] = fold
+        all_fold_reports.append(report_df)
+        print(f"Fold {fold + 1} Detailed Report generated.")
+
+
+    # --- 3. Aggregate, Save, and Print Final Results ---
+    print("\n===== CROSS-VALIDATION FINAL RESULTS ======")
+    
+    # Save detailed per-fold and average results to CSV
+    if all_fold_reports:
+        # Combine all fold reports
+        full_report_df = pd.concat(all_fold_reports)
+        
+        # Calculate the mean for each metric across all folds
+        mean_report_df = full_report_df.groupby(full_report_df.index).mean(numeric_only=True)
+        mean_report_df['fold'] = 'mean'
+        if class_mapping:
+            mean_report_df['class_name'] = mean_report_df.index.map(lambda x: class_mapping.get(int(x), x))
+
+        # Combine into a final report
+        final_report_with_avg = pd.concat([full_report_df, mean_report_df])
+        
+        # Define output path
+        output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
+        output_dir.mkdir(exist_ok=True, parents=True)
+        csv_path = output_dir / "cross_validation_detailed_report.csv"
+
+        # Save to CSV
+        final_report_with_avg.to_csv(csv_path)
+        print(f"\nDetailed cross-validation report saved to: {csv_path}")
+
+    # Print summary of macro averages
+    avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
+    print("\n--- Average Metrics Across Folds ---")
     print(f"Average Test Accuracy: {avg_metrics.get('test_acc_epoch', 0):.4f}")
-    print(f"Average Test F1-Score: {avg_metrics.get('test_f1_epoch', 0):.4f}")
-    print(f"Average Test Precision: {avg_metrics.get('test_precision_epoch', 0):.4f}")
-    print(f"Average Test Recall: {avg_metrics.get('test_recall_epoch', 0):.4f}")
-    print("\nIndividual fold metrics logged in TensorBoard.")
+    print(f"Average Test F1-Score (Macro): {avg_metrics.get('test_f1_epoch', 0):.4f}")
+    print(f"Average Test Precision (Macro): {avg_metrics.get('test_precision_epoch', 0):.4f}")
+    print(f"Average Test Recall (Macro): {avg_metrics.get('test_recall_epoch', 0):.4f}")
+    print("\nIndividual fold metrics and checkpoints logged in the respective 'fold_X' directories.")
 
 
 if __name__ == "__main__":

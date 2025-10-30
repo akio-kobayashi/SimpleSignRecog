@@ -44,6 +44,10 @@ class Solver(pl.LightningModule):
         self.test_recall = torchmetrics.Recall(task="multiclass", num_classes=num_classes, average='macro')
         self.test_cm = torchmetrics.ConfusionMatrix(task="multiclass", num_classes=num_classes)
 
+        # Lists to store predictions and labels for the entire test set
+        self.test_preds: List[Tensor] = []
+        self.test_labels: List[Tensor] = []
+
 
     def forward(self, x: Tensor, lengths: Tensor) -> Tensor:
         """
@@ -88,6 +92,11 @@ class Solver(pl.LightningModule):
         
         return loss
 
+    def on_test_epoch_start(self) -> None:
+        """Clear prediction and label lists at the start of the test epoch."""
+        self.test_preds.clear()
+        self.test_labels.clear()
+
     def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int) -> Tensor:
         """
         A single test step.
@@ -96,18 +105,31 @@ class Solver(pl.LightningModule):
         logits = self.forward(features, lengths)
         loss = self.criterion(logits, labels)
         
+        # Get predictions
+        preds = torch.argmax(logits, dim=1)
+        
+        # Store predictions and labels
+        self.test_preds.append(preds)
+        self.test_labels.append(labels)
+
         # Update metrics
-        self.test_accuracy.update(logits, labels)
-        self.test_f1.update(logits, labels)
-        self.test_precision.update(logits, labels)
-        self.test_recall.update(logits, labels)
-        self.test_cm.update(logits, labels)
+        self.test_accuracy.update(preds, labels)
+        self.test_f1.update(preds, labels)
+        self.test_precision.update(preds, labels)
+        self.test_recall.update(preds, labels)
+        self.test_cm.update(preds, labels)
         
         self.log("test_loss", loss, on_step=False, on_epoch=True)
         return loss
 
     def on_test_epoch_end(self):
         """Called at the end of the test epoch to aggregate and save results."""
+        # Concatenate all predictions and labels
+        if self.test_preds:
+            self.test_preds = torch.cat(self.test_preds)
+        if self.test_labels:
+            self.test_labels = torch.cat(self.test_labels)
+
         # Compute and log final metrics
         test_acc = self.test_accuracy.compute()
         test_f1 = self.test_f1.compute()
@@ -127,9 +149,10 @@ class Solver(pl.LightningModule):
                              columns=range(self.config['model']['num_classes']))
         
         # Save to a file in the logger's directory for this run
-        cm_path = Path(self.trainer.log_dir) / "confusion_matrix.csv"
-        df_cm.to_csv(cm_path)
-        print(f"\nConfusion matrix saved to {cm_path}")
+        if self.trainer and self.trainer.log_dir:
+            cm_path = Path(self.trainer.log_dir) / "confusion_matrix.csv"
+            df_cm.to_csv(cm_path)
+            print(f"\nConfusion matrix saved to {cm_path}")
 
     def configure_optimizers(self):
         """
@@ -141,4 +164,4 @@ class Solver(pl.LightningModule):
             "scheduler": torch.optim.lr_scheduler.OneCycleLR(opt, **self.config['scheduler']),
             "interval": "step",
         }
-        return [opt], [scheduler_config]
+        return [opt], [scheduler_config]}
