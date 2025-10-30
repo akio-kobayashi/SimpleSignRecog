@@ -164,4 +164,4 @@ class Solver(pl.LightningModule):
             "scheduler": torch.optim.lr_scheduler.OneCycleLR(opt, **self.config['scheduler']),
             "interval": "step",
         }
-        return [opt], [scheduler_config]}
+        return [opt], [scheduler_config]
