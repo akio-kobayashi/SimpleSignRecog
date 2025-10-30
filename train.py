@@ -132,9 +132,10 @@ def main(config: dict, output_path: str | None = None, checkpoint_path: str | No
         fold_log_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"]
         logger = TensorBoardLogger(save_dir=str(fold_log_dir.parent), name=config["logger"]["name"], version=f"fold_{fold}")
         
+        checkpoint_conf = {k: v for k, v in config["checkpoint"].items() if k != 'dirpath'}
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             dirpath=str(Path(logger.log_dir) / "checkpoints"),
-            **config["checkpoint"],
+            **checkpoint_conf,
             filename=f"{{epoch}}-{{val_loss:.2f}}"
         )
 
