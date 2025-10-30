@@ -34,7 +34,7 @@ def seed_worker(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-def main(config: dict, checkpoint_path: str | None = None):
+def main(config: dict, output_path: str | None = None, checkpoint_path: str | None = None):
     """
     Main K-Fold Cross-Validation training pipeline.
     """
@@ -202,11 +202,56 @@ def main(config: dict, checkpoint_path: str | None = None):
     print(f"Average Test Precision (Macro): {avg_metrics.get('test_precision_epoch', 0):.4f}")
     print(f"Average Test Recall (Macro): {avg_metrics.get('test_recall_epoch', 0):.4f}")
     print("\nIndividual fold metrics and checkpoints logged in the respective 'fold_X' directories.")
+    # --- 3. Aggregate and Save/Print Final Results ---
+    print("\n===== CROSS-VALIDATION FINAL RESULTS ======")
+    
+    if not all_fold_metrics:
+        print("No test results found to generate a report.")
+        return
+
+    results_df = pd.DataFrame(all_fold_metrics)
+    results_df.loc['average'] = results_df.mean()
+
+    # Rename columns for clarity
+    results_df = results_df.rename(columns={
+        'test_acc_epoch': 'test_accuracy',
+        'test_f1_epoch': 'test_f1',
+        'test_precision_epoch': 'test_precision',
+        'test_recall_epoch': 'test_recall'
+    })
+
+    # Add fold column
+    results_df.index.name = 'fold'
+    results_df = results_df.reset_index()
+    results_df['fold'] = results_df['fold'].apply(lambda x: str(x + 1) if isinstance(x, int) else x)
+
+    # --- 4. Save or Print Results ---
+    if output_path:
+        file_ext = Path(output_path).suffix
+        try:
+            if file_ext == '.csv':
+                results_df.to_csv(output_path, index=False, float_format='%.4f')
+                print(f"\nResults successfully saved to {output_path}")
+            elif file_ext == '.md':
+                results_df.to_markdown(output_path, index=False, floatfmt='.4f')
+                print(f"\nResults successfully saved to {output_path}")
+            else:
+                print(f"\nUnsupported output format '{file_ext}'. Printing to console instead.")
+                print(results_df.to_string(float_format='%.4f', index=False))
+        except Exception as e:
+            print(f"\nError saving results to {output_path}: {e}")
+            print("Printing to console instead:")
+            print(results_df.to_string(float_format='%.4f', index=False))
+    else:
+        print(results_df.to_string(float_format='%.4f', index=False))
+    
+    print("\nIndividual fold metrics are also logged in TensorBoard.")
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml", help="YAML形式の設定ファイル")
+    parser.add_argument("--output", type=str, default=None, help="結果を保存するファイルパス (e.g., results.csv, results.md)")
     parser.add_argument("--checkpoint", type=str, default=None, help="モデルのチェックポイント（CVでは非推奨）")
     args = parser.parse_args()
 
@@ -215,4 +260,4 @@ if __name__ == "__main__":
     with open(args.config, "r") as yf:
         config = yaml.safe_load(yf)
 
-    main(config, checkpoint_path=args.checkpoint)
+    main(config, output_path=args.output, checkpoint_path=args.checkpoint)
