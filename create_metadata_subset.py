@@ -3,6 +3,7 @@ import pandas as pd
 
 parser = ArgumentParser()
 parser.add_argument("--max_num", type=int, default=20, help="１クラスあたりの最大サンプル数")
+parser.add_argument("--output", type=str, default="metadata_subset.csv", help="出力CSV")
 args = parser.parse_args()
 
 # Load the metadata
@@ -16,6 +17,6 @@ subset_df = (
 )
 
 # Save the subset to a new CSV file
-subset_df.to_csv("metadata_subset.csv", index=False)
+subset_df.to_csv(args.output, index=False)
 
 print("Subset of metadata has been created and saved to metadata_subset.csv")
