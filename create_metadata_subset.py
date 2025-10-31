@@ -4,10 +4,11 @@ import pandas as pd
 parser = ArgumentParser()
 parser.add_argument("--max_num", type=int, default=20, help="１クラスあたりの最大サンプル数")
 parser.add_argument("--output", type=str, default="metadata_subset.csv", help="出力CSV")
+parser.add_argument("--input", type=str, required=True, help="入力CSV")
 args = parser.parse_args()
 
 # Load the metadata
-df = pd.read_csv("metadata.csv")
+df = pd.read_csv(args.input)
 
 # Group by class_label and take the first max_num samples from each group
 #subset_df = df.groupby("class_label").head(args.max_num)
