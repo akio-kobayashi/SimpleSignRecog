@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import sys
+import itertools
 from scipy.signal import savgol_filter
 from scipy.spatial.transform import Rotation as R
 
@@ -343,3 +344,193 @@ def calculate_features(landmarks: np.ndarray) -> np.ndarray:
     return final_features
 
 
+# --- Gil-Martín et al. (ICAART 2025) Feature Implementations ---
+# The following functions are implementations of the feature engineering techniques
+# described in "Hand Gesture Recognition Using MediaPipe Landmarks and Deep Learning Networks"
+# by Gil-Martín et al. (ICAART 2025).
+
+def normalize_by_current_wrist(landmarks: np.ndarray) -> np.ndarray:
+    """
+    論文(eq:current)の実装: 各フレームのランドマークを、そのフレームの手首(0番)を基準に正規化（平行移動）する。
+    
+    処理内容:
+    - 各フレーム、各手において、全ランドマークの座標から手首の座標を引く。
+    - これにより、画面上の手の絶対位置に依存しない表現になる。
+    - スケーリングは行わない。
+    """
+    num_frames = landmarks.shape[0]
+    normalized_landmarks = np.full_like(landmarks, np.nan, dtype=np.float32)
+
+    for i in range(num_frames):
+        frame_data = landmarks[i]
+        for hand_offset in [LEFT_HAND_OFFSET, RIGHT_HAND_OFFSET]:
+            hand_data_slice = slice(hand_offset, hand_offset + NUM_LANDMARKS_PER_HAND * 3)
+            hand_data = frame_data[hand_data_slice].reshape(NUM_LANDMARKS_PER_HAND, 3)
+
+            if np.all(np.isnan(hand_data)):
+                continue
+
+            wrist_coords = hand_data[0].copy()
+            translated_hand = hand_data - wrist_coords
+            normalized_landmarks[i, hand_data_slice] = translated_hand.flatten()
+
+    return normalized_landmarks
+
+def normalize_by_first_wrist(landmarks: np.ndarray) -> np.ndarray:
+    """
+    論文(eq:first)の実装: 全フレームのランドマークを、最初の有効なフレームの手首(0番)を基準に正規化（平行移動）する。
+    
+    処理内容:
+    - 最初に手が検出されたフレームの手首の座標を基準点として記憶する。
+    - 全てのフレーム、全てのランドマークから、その基準点の座標を引く。
+    - これにより、ジェスチャ開始位置からの相対的な手の動きを表現する。
+    - スケーリングは行わない。
+    """
+    num_frames = landmarks.shape[0]
+    normalized_landmarks = np.full_like(landmarks, np.nan, dtype=np.float32)
+    
+    first_wrist_coords = {
+        "left": np.full(3, np.nan, dtype=np.float32),
+        "right": np.full(3, np.nan, dtype=np.float32)
+    }
+
+    # 最初に有効な手首の座標を見つける
+    for i in range(num_frames):
+        frame_data = landmarks[i]
+        # 左手
+        if np.all(np.isnan(first_wrist_coords["left"])):
+            left_hand_data = frame_data[LEFT_HAND_SLICE].reshape(NUM_LANDMARKS_PER_HAND, 3)
+            if not np.all(np.isnan(left_hand_data)):
+                first_wrist_coords["left"] = left_hand_data[0].copy()
+        # 右手
+        if np.all(np.isnan(first_wrist_coords["right"])):
+            right_hand_data = frame_data[RIGHT_HAND_SLICE].reshape(NUM_LANDMARKS_PER_HAND, 3)
+            if not np.all(np.isnan(right_hand_data)):
+                first_wrist_coords["right"] = right_hand_data[0].copy()
+        
+        if not np.all(np.isnan(first_wrist_coords["left"])) and not np.all(np.isnan(first_wrist_coords["right"])):
+            break
+
+    # 全フレームを正規化
+    for i in range(num_frames):
+        frame_data = landmarks[i]
+        # 左手
+        left_hand_data = frame_data[LEFT_HAND_SLICE].reshape(NUM_LANDMARKS_PER_HAND, 3)
+        if not np.all(np.isnan(left_hand_data)) and not np.all(np.isnan(first_wrist_coords["left"])):
+            normalized_landmarks[i, LEFT_HAND_SLICE] = (left_hand_data - first_wrist_coords["left"]).flatten()
+        
+        # 右手
+        right_hand_data = frame_data[RIGHT_HAND_SLICE].reshape(NUM_LANDMARKS_PER_HAND, 3)
+        if not np.all(np.isnan(right_hand_data)) and not np.all(np.isnan(first_wrist_coords["right"])):
+            normalized_landmarks[i, RIGHT_HAND_SLICE] = (right_hand_data - first_wrist_coords["right"]).flatten()
+
+    return normalized_landmarks
+
+def calculate_speed_features(landmarks: np.ndarray) -> np.ndarray:
+    """
+    論文で提案された速度特徴量を計算する。
+    
+    処理内容:
+    - ランドマーク座標の時間微分を計算する。
+    - `np.diff` を使い、フレーム間の座標の差分を求める。
+    - 最初のフレームの速度は0とする。
+    """
+    # 最初のフレームの速度は変化がないため、prependで元の値を先頭に追加し、差分計算後の要素数を保つ
+    # これにより、最初のフレームの速度はゼロベクトルになる
+    velocity = np.diff(landmarks, axis=0, prepend=landmarks[0:1])
+    return velocity
+
+
+def calculate_anthropometric_features(landmarks: np.ndarray) -> np.ndarray:
+    """
+    論文で提案された人体測定的特徴量（ランドマーク間の距離）を計算する。
+    
+    処理内容:
+    - 各手において、21個のランドマークの全てのペア(21 C 2 = 210通り)のユークリッド距離を計算する。
+    - これにより、手の形状や指の相対的な位置関係をスケール不変な特徴量として表現する。
+    - 出力は (フレーム数, 420) の形状になる (左手210 + 右手210)。
+    """
+    num_frames = landmarks.shape[0]
+    num_pairs = len(list(itertools.combinations(range(NUM_LANDMARKS_PER_HAND), 2))) # 210
+    # 左手210 + 右手210 = 420次元
+    distances = np.full((num_frames, num_pairs * 2), np.nan, dtype=np.float32)
+    
+    landmark_pairs = list(itertools.combinations(range(NUM_LANDMARKS_PER_HAND), 2))
+
+    for i in range(num_frames):
+        frame_data = landmarks[i]
+        
+        for hand_idx, hand_offset in enumerate([LEFT_HAND_OFFSET, RIGHT_HAND_OFFSET]):
+            hand_data_slice = slice(hand_offset, hand_offset + NUM_LANDMARKS_PER_HAND * 3)
+            hand_data = frame_data[hand_data_slice].reshape(NUM_LANDMARKS_PER_HAND, 3)
+
+            if np.all(np.isnan(hand_data)):
+                continue
+            
+            for pair_idx, (p1_idx, p2_idx) in enumerate(landmark_pairs):
+                p1 = hand_data[p1_idx]
+                p2 = hand_data[p2_idx]
+                dist = np.linalg.norm(p1 - p2)
+                distances[i, hand_idx * num_pairs + pair_idx] = dist
+                
+    return distances
+
+def extract_paper_features(
+    landmarks: np.ndarray, 
+    normalize_mode: str = None, 
+    speed: bool = False, 
+    anthropometric: bool = False
+) -> np.ndarray:
+    """
+    Gil-Martín et al. (2025) 論文の特徴量抽出を統合的に実行するラッパー関数。
+
+    Args:
+        landmarks (np.ndarray): 元のランドマークデータ。形状は (frames, features)。
+        normalize_mode (str, optional): 適用する正規化の種類。
+            - 'current_wrist': フレーム毎の手首位置で正規化 (eq:current)。
+            - 'first_wrist': 最初のフレームの手首位置で正規化 (eq:first)。
+            - None: 正規化を行わない。 Defaults to None.
+        speed (bool, optional): 速度特徴量を計算に含めるか。 Defaults to False.
+        anthropometric (bool, optional): 人体測定的特徴量（ペア間距離）を計算に含めるか。 Defaults to False.
+
+    Returns:
+        np.ndarray: 計算された特徴量を結合した配列。
+    
+    Raises:
+        ValueError: `normalize_mode`に無効な文字列が指定された場合。
+    """
+    
+    # 1. 正規化の適用
+    if normalize_mode:
+        if normalize_mode == 'current_wrist':
+            processed_landmarks = normalize_by_current_wrist(landmarks)
+        elif normalize_mode == 'first_wrist':
+            processed_landmarks = normalize_by_first_wrist(landmarks)
+        else:
+            raise ValueError(f"Invalid normalize_mode: '{normalize_mode}'. Choose from 'current_wrist', 'first_wrist', or None.")
+    else:
+        # 正規化しない場合は、元のデータをコピーして使用
+        processed_landmarks = landmarks.copy()
+
+    # 2. 特徴量の計算と結合
+    # 結合する特徴量リストの初期値として、処理済みのランドマーク座標を設定
+    features_to_combine = [processed_landmarks]
+
+    if speed:
+        # 速度特徴量を計算
+        # 注意: 速度は正規化後の座標から計算するべき
+        speed_features = calculate_speed_features(processed_landmarks)
+        features_to_combine.append(speed_features)
+
+    if anthropometric:
+        # 人体測定的特徴量を計算
+        # 注意: 距離はスケール不変なので、正規化前の座標から計算しても良いが、
+        # 一貫性のため正規化後の座標から計算する
+        anthropometric_features = calculate_anthropometric_features(processed_landmarks)
+        features_to_combine.append(anthropometric_features)
+
+    # 3. 全ての特徴量を結合して返す
+    if len(features_to_combine) == 1:
+        return features_to_combine[0]
+    else:
+        return np.concatenate(features_to_combine, axis=1)

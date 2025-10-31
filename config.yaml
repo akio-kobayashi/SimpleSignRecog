@@ -13,9 +13,18 @@ data:
     augment_noise: true
     flip_prob: 0.5 # 左右反転の確率
 
+# 特徴量エンジニアリングの設定
+features:
+  # どの正規化手法を使うか: "current_wrist", "first_wrist", "normalize_landmarks", "canonical_normalize" or null
+  normalize_mode: "normalize_landmarks"
+  # 論文ベースの特徴量を追加するか
+  paper_features:
+    speed: false
+    anthropometric: false
+
 # モデルのアーキテクチャ設定
 model:
-  input_dim: 386
+  input_dim: 386 # この値は train.py で features の設定に基づいて自動計算・上書きされます
   num_classes: 20
   channels: 128
   dropout: 0.2
@@ -31,6 +40,7 @@ scheduler:
 
 # PyTorch Lightning Trainerの設定
 trainer:
+  metrics_average_mode: "macro" # "macro" or "weighted"
   max_epochs: 50
   accelerator: auto
   log_every_n_steps: 1
@@ -50,4 +60,6 @@ logger:
 # 出力ファイルの設定
 output:
   svm_results_path: results_svm.csv
+  rf_results_path: results_rf.csv
+  xgboost_results_path: results_xgboost.csv
   nn_results_path: results_nn.csv

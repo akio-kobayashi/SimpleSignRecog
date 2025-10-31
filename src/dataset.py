@@ -15,9 +15,11 @@ from src.feature_engineering import (
     augment_flip,
     augment_noise,
     augment_rotate,
+    normalize_landmarks,
     canonical_normalize_landmarks,
     smooth_landmarks,
     calculate_features,
+    extract_paper_features,
 )
 
 
@@ -38,12 +40,8 @@ class SignDataset(Dataset):
         self, 
         metadata_df: pd.DataFrame, 
         data_base_dir: str, 
+        config: dict,
         sort_by_length: bool = False,
-        # データ拡張を適用するかどうかのフラグ
-        augment_flip: bool = False,
-        augment_rotate: bool = False,
-        augment_noise: bool = False,
-        flip_prob: float = 0.5,
     ):
         """
         データセットの初期化処理
@@ -51,21 +49,22 @@ class SignDataset(Dataset):
         Args:
             metadata_df (pd.DataFrame): 各サンプルの情報（NPZファイルのパス、クラスラベルなど）が書かれたメタデータ。
             data_base_dir (str): NPZファイルが保存されているベースディレクトリ。
+            config (dict): `config.yaml`から読み込まれた設定情報。特徴量やデータ拡張の設定を含む。
             sort_by_length (bool): Trueの場合、データをフレーム数（系列長）でソートする。`BucketBatchSampler`で効率化するために使う。
-            augment_flip (bool): 左右反転のデータ拡張を有効にするか。
-            augment_rotate (bool): ランダム回転のデータ拡張を有効にするか。
-            augment_noise (bool): ノイズ付加のデータ拡張を有効にするか。
-            flip_prob (float): 左右反転を適用する確率。
         """
         super().__init__()
         self.data_base_dir = Path(data_base_dir)
         self.df = metadata_df
         
-        # データ拡張のフラグをインスタンス変数として保存
-        self.augment_flip = augment_flip
-        self.augment_rotate = augment_rotate
-        self.augment_noise = augment_noise
-        self.flip_prob = flip_prob
+        # 設定をインスタンス変数として保存
+        self.feature_config = config.get('features', {})
+        aug_config = config.get('data', {}).get('augmentation', {})
+        
+        # データ拡張のフラグ
+        self.augment_flip = aug_config.get('augment_flip', False)
+        self.augment_rotate = aug_config.get('augment_rotate', False)
+        self.augment_noise = aug_config.get('augment_noise', False)
+        self.flip_prob = aug_config.get('flip_prob', 0.5)
 
         # `BucketBatchSampler`を使う場合、あらかじめ系列長でソートしておく
         if sort_by_length:
@@ -102,16 +101,43 @@ class SignDataset(Dataset):
         if self.augment_noise and random.random() < 0.5: # 50%の確率で適用
             processed_landmarks = augment_noise(processed_landmarks)
 
-        # 3. 座標の正規化 (位置・スケール不変性の獲得)
-        processed_landmarks = canonical_normalize_landmarks(processed_landmarks)
+        # --- 3. 特徴量抽出 (config.yamlに基づいて処理を分岐) ---
+        normalize_mode = self.feature_config.get('normalize_mode', 'normalize_landmarks')
+        paper_conf = self.feature_config.get('paper_features', {})
+        use_paper_speed = paper_conf.get('speed', False)
+        use_paper_anthropometric = paper_conf.get('anthropometric', False)
 
-        # 4. データの平滑化 (ノイズの除去)
-        processed_landmarks = smooth_landmarks(processed_landmarks)
+        # 論文手法のいずれかが有効な場合は、新しい統合関数を使用
+        is_paper_mode = normalize_mode in ['current_wrist', 'first_wrist'] or use_paper_speed or use_paper_anthropometric
 
-        # 5. 特徴量の計算 (速度、加速度、形状特徴などを追加)
-        final_features = calculate_features(processed_landmarks)
+        if is_paper_mode:
+            # 論文ベースの統合関数を呼び出す
+            final_features = extract_paper_features(
+                processed_landmarks,
+                normalize_mode=normalize_mode if normalize_mode in ['current_wrist', 'first_wrist'] else None,
+                speed=use_paper_speed,
+                anthropometric=use_paper_anthropometric
+            )
+            # 注意: 論文手法の場合、平滑化や既存の特徴量計算(calculate_features)は一旦スキップします。
+            # 必要に応じて、このパイプライン内に `smooth_landmarks` を追加することも可能です。
 
-        # 6. NaN/infチェック: 稀に発生する不安定な値を0で置き換え、学習の安定化を図る
+        else:
+            # --- 既存の特徴量抽出パイプライン ---
+            # 3a. 座標の正規化
+            if normalize_mode == 'normalize_landmarks':
+                normalized_landmarks = normalize_landmarks(processed_landmarks)
+            elif normalize_mode == 'canonical_normalize':
+                normalized_landmarks = canonical_normalize_landmarks(processed_landmarks)
+            else: # 'none' または未指定の場合
+                normalized_landmarks = processed_landmarks
+
+            # 3b. データの平滑化
+            smoothed_landmarks = smooth_landmarks(normalized_landmarks)
+
+            # 3c. 特徴量の計算
+            final_features = calculate_features(smoothed_landmarks)
+
+        # 4. NaN/infチェック: 稀に発生する不安定な値を0で置き換え、学習の安定化を図る
         if np.any(np.isnan(final_features)) or np.any(np.isinf(final_features)):
             final_features = np.nan_to_num(final_features, nan=0.0, posinf=0.0, neginf=0.0)
         

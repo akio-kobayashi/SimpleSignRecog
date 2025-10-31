@@ -34,14 +34,16 @@ class Solver(pl.LightningModule):
 
         # 3. Define metrics
         num_classes = self.config['model'].get('num_classes', 20)
+        avg_mode = self.config.get('trainer', {}).get('metrics_average_mode', 'macro')
+
         self.train_accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
         self.val_accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
         
         # Metrics for the test step
         self.test_accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
-        self.test_f1 = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average='macro', zero_division=0)
-        self.test_precision = torchmetrics.Precision(task="multiclass", num_classes=num_classes, average='macro', zero_division=0)
-        self.test_recall = torchmetrics.Recall(task="multiclass", num_classes=num_classes, average='macro', zero_division=0)
+        self.test_f1 = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average=avg_mode, zero_division=0)
+        self.test_precision = torchmetrics.Precision(task="multiclass", num_classes=num_classes, average=avg_mode, zero_division=0)
+        self.test_recall = torchmetrics.Recall(task="multiclass", num_classes=num_classes, average=avg_mode, zero_division=0)
         self.test_cm = torchmetrics.ConfusionMatrix(task="multiclass", num_classes=num_classes)
 
         # Lists to store predictions and labels for the entire test set

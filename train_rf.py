@@ -1,5 +1,6 @@
 
 
+
 import yaml
 import random
 import copy
@@ -9,7 +10,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, accuracy_score
 from tqdm import tqdm
 
@@ -42,7 +43,7 @@ def extract_statistical_features(features: np.ndarray) -> np.ndarray:
 
 def main(config: dict):
     """
-    Main K-Fold Cross-Validation pipeline for the SVM model.
+    Main K-Fold Cross-Validation pipeline for the Random Forest model.
     """
     # --- 0. Set Seed ---
     if "seed" in config:
@@ -50,11 +51,11 @@ def main(config: dict):
         print(f"--- Seed set to {config['seed']} for reproducibility ---")
 
     # --- 1. Load Full Dataset and Extract Features ---
-    print("--- Loading Full Dataset and Extracting Features for SVM ---")
+    print("--- Loading Full Dataset and Extracting Features for Random Forest ---")
     data_config = config['data']
     metadata_df = pd.read_csv(data_config['metadata_path'])
 
-    # For SVM, we use a fixed feature set without augmentation.
+    # For Random Forest, we use a fixed feature set without augmentation.
     # Create a config with augmentations disabled.
     eval_config = copy.deepcopy(config)
     if 'data' not in eval_config: eval_config['data'] = {}
@@ -104,15 +105,14 @@ def main(config: dict):
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
-        # --- 2c. Train SVM Model ---
-        print("--- Training SVM model ---")
-        # Using probability=True to get probabilities for other metrics if needed, but it slows down training
-        svm_model = SVC(kernel='rbf', random_state=config.get('seed', 42))
-        svm_model.fit(X_train_scaled, y_train)
+        # --- 2c. Train Random Forest Model ---
+        print("--- Training Random Forest model ---")
+        rf_model = RandomForestClassifier(n_estimators=100, random_state=config.get('seed', 42), n_jobs=-1)
+        rf_model.fit(X_train_scaled, y_train)
 
         # --- 2d. Test this fold ---
         print(f"--- Testing Fold {fold + 1} ---")
-        y_pred = svm_model.predict(X_test_scaled)
+        y_pred = rf_model.predict(X_test_scaled)
         
         # Generate report
         report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
@@ -133,7 +133,7 @@ def main(config: dict):
         print(f"Fold {fold + 1} F1-Score ({avg_mode.capitalize()}): {report[avg_key]['f1-score']:.4f}")
 
     # --- 3. Aggregate and Save/Print Final Results ---
-    print("\n===== SVM CROSS-VALIDATION FINAL RESULTS ======")
+    print("\n===== RANDOM FOREST CROSS-VALIDATION FINAL RESULTS ======")
     
     if not all_fold_metrics:
         print("No test results found to generate a report.")
@@ -148,7 +148,7 @@ def main(config: dict):
     results_df['fold'] = results_df['fold'].apply(lambda x: str(x + 1) if isinstance(x, int) else x)
 
     # --- 4. Save or Print Results ---
-    output_path = config.get('output', {}).get('svm_results_path')
+    output_path = config.get('output', {}).get('rf_results_path')
     if output_path:
         file_ext = Path(output_path).suffix
         try:
@@ -175,4 +175,3 @@ if __name__ == "__main__":
         config = yaml.safe_load(yf)
 
     main(config)
-

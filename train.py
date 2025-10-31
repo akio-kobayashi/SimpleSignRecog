@@ -1,5 +1,6 @@
 import yaml
 import random
+import copy
 from argparse import ArgumentParser
 from pathlib import Path
 import numpy as np
@@ -34,14 +35,51 @@ def seed_worker(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
+def get_feature_dim(feature_config: dict) -> int:
+    """
+    config.yamlのfeaturesセクションに基づいて、特徴量の次元数を計算する。
+    """
+    # ベースとなる座標の次元数 (x, y, z * 21ランドマーク * 2手)
+    BASE_COORD_DIM = 21 * 3 * 2
+    
+    # 既存の特徴量パイプラインの次元数
+    # calculate_featuresは [pos(63*2) + vel(63*2) + acc(63*2) + geo(4*2)] だが、
+    # モデルは片手ずつ処理するので、入力は pos(63)+vel(63)+acc(63)+geo(4) = 193次元。両手で386次元。
+    EXISTING_PIPELINE_DIM = 193 * 2
+
+    normalize_mode = feature_config.get('normalize_mode', 'normalize_landmarks')
+    paper_conf = feature_config.get('paper_features', {})
+    use_paper_speed = paper_conf.get('speed', False)
+    use_paper_anthropometric = paper_conf.get('anthropometric', False)
+
+    is_paper_mode = normalize_mode in ['current_wrist', 'first_wrist'] or use_paper_speed or use_paper_anthropometric
+
+    if is_paper_mode:
+        # 論文ベースのパイプライン
+        dim = BASE_COORD_DIM # 座標は常に出力される
+        if use_paper_speed:
+            dim += BASE_COORD_DIM # 速度特徴量
+        if use_paper_anthropometric:
+            # 21 C 2 = 210ペア * 2手
+            dim += 210 * 2
+        return dim
+    else:
+        # 既存のパイプライン
+        return EXISTING_PIPELINE_DIM
+
 def main(config: dict, checkpoint_path: str | None = None):
     """
     Main K-Fold Cross-Validation training pipeline.
     """
-    # --- 0. Set Seed ---
+    # --- 0. Set Seed & Calculate Feature Dimension ---
     if "seed" in config:
         set_seed(config["seed"])
         print(f"--- Seed set to {config['seed']} for reproducibility ---")
+
+    # Calculate feature dimension from config and update the config dict
+    feature_dim = get_feature_dim(config.get('features', {}))
+    config['model']['input_dim'] = feature_dim
+    print(f"--- Feature dimension calculated based on config: {feature_dim} ---")
     
     g = torch.Generator()
     if "seed" in config:
@@ -53,7 +91,6 @@ def main(config: dict, checkpoint_path: str | None = None):
     metadata_df = pd.read_csv(data_config['metadata_path'])
     
     # Create a mapping from class index to a readable name if available
-    # This assumes the CSV has 'class_label' (int) and 'class_name' (str)
     class_mapping = None
     if 'class_name' in metadata_df.columns:
         class_mapping = pd.Series(metadata_df['class_name'].values, index=metadata_df['class_label']).to_dict()
@@ -87,28 +124,27 @@ def main(config: dict, checkpoint_path: str | None = None):
         print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
         # --- 2b. Create Datasets and DataLoaders for this fold ---
-        aug_config = data_config.get('augmentation', {})
+        # For validation and test, create a config with augmentations disabled
+        eval_config = copy.deepcopy(config)
+        eval_config['data']['augmentation'] = {}
 
         train_dataset = SignDataset(
             metadata_df=train_df,
             data_base_dir=data_config['source_landmark_dir'],
-            sort_by_length=data_config.get('use_bucketing', False),
-            augment_flip=aug_config.get('augment_flip', False),
-            augment_rotate=aug_config.get('augment_rotate', False),
-            augment_noise=aug_config.get('augment_noise', False),
-            flip_prob=aug_config.get('flip_prob', 0.5)
+            config=config,
+            sort_by_length=data_config.get('use_bucketing', False)
         )
         val_dataset = SignDataset(
             metadata_df=val_df,
             data_base_dir=data_config['source_landmark_dir'],
-            sort_by_length=False,
-            augment_flip=False, augment_rotate=False, augment_noise=False
+            config=eval_config,
+            sort_by_length=False
         )
         test_dataset = SignDataset(
             metadata_df=test_df,
             data_base_dir=data_config['source_landmark_dir'],
-            sort_by_length=False,
-            augment_flip=False, augment_rotate=False, augment_noise=False
+            config=eval_config,
+            sort_by_length=False
         )
 
         if data_config.get('use_bucketing', False):
@@ -122,9 +158,12 @@ def main(config: dict, checkpoint_path: str | None = None):
 
         # --- 2c. Initialize Model and Trainer for this fold ---
         if 'scheduler' in config and 'total_steps' not in config['scheduler']:
-            total_steps = (len(train_dataset) // data_config['batch_size']) * config['trainer']['max_epochs']
+            # Recalculate total_steps for each fold to be precise
+            num_devices = trainer.num_devices if 'trainer' in locals() and hasattr(trainer, 'num_devices') else 1
+            effective_batch_size = data_config['batch_size'] * num_devices
+            total_steps = (len(train_dataset) // effective_batch_size) * config['trainer']['max_epochs']
             config['scheduler']['total_steps'] = total_steps
-            print(f"Scheduler total_steps calculated: {total_steps}")
+            print(f"Scheduler total_steps calculated for fold {fold + 1}: {total_steps}")
 
         model = Solver(config)
 
@@ -157,14 +196,17 @@ def main(config: dict, checkpoint_path: str | None = None):
         y_true = model.test_labels.cpu().numpy()
         y_pred = model.test_preds.cpu().numpy()
         
-        report = classification_report(y_true, y_pred, output_dict=True)
+        # Ensure class_mapping keys are integers for mapping
+        if class_mapping:
+            class_mapping_int_keys = {int(k): v for k, v in class_mapping.items()}
+            target_names = [class_mapping_int_keys.get(i, str(i)) for i in range(config['model']['num_classes'])]
+        else:
+            target_names = [str(i) for i in range(config['model']['num_classes'])]
+
+        report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
         report_df = pd.DataFrame(report).transpose()
         
-        # Add class names if available
-        if class_mapping:
-            report_df['class_name'] = report_df.index.map(lambda x: class_mapping.get(int(x), x))
-
-        report_df['fold'] = fold
+        report_df['fold'] = fold + 1
         all_fold_reports.append(report_df)
         print(f"Fold {fold + 1} Detailed Report generated.")
 
@@ -172,82 +214,47 @@ def main(config: dict, checkpoint_path: str | None = None):
     # --- 3. Aggregate, Save, and Print Final Results ---
     print("\n===== CROSS-VALIDATION FINAL RESULTS ======")
     
-    # Save detailed per-fold and average results to CSV
-    if all_fold_reports:
-        # Combine all fold reports
-        full_report_df = pd.concat(all_fold_reports)
-        
-        # Calculate the mean for each metric across all folds
-        mean_report_df = full_report_df.groupby(full_report_df.index).mean(numeric_only=True)
-        mean_report_df['fold'] = 'mean'
-        if class_mapping:
-            mean_report_df['class_name'] = mean_report_df.index.map(lambda x: class_mapping.get(int(x), x))
-
-        # Combine into a final report
-        final_report_with_avg = pd.concat([full_report_df, mean_report_df])
-        
-        # Define output path
-        output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
-        output_dir.mkdir(exist_ok=True, parents=True)
-        csv_path = output_dir / "cross_validation_detailed_report.csv"
-
-        # Save to CSV
-        final_report_with_avg.to_csv(csv_path)
-        print(f"\nDetailed cross-validation report saved to: {csv_path}")
-
-    # Print summary of macro averages
-    avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
-    print("\n--- Average Metrics Across Folds ---")
-    print(f"Average Test Accuracy: {avg_metrics.get('test_acc_epoch', 0):.4f}")
-    print(f"Average Test F1-Score (Macro): {avg_metrics.get('test_f1_epoch', 0):.4f}")
-    print(f"Average Test Precision (Macro): {avg_metrics.get('test_precision_epoch', 0):.4f}")
-    print(f"Average Test Recall (Macro): {avg_metrics.get('test_recall_epoch', 0):.4f}")
-    print("\nIndividual fold metrics and checkpoints logged in the respective 'fold_X' directories.")
-    # --- 3. Aggregate and Save/Print Final Results ---
-    print("\n===== CROSS-VALIDATION FINAL RESULTS ======")
-    
-    if not all_fold_metrics:
+    if not all_fold_reports:
         print("No test results found to generate a report.")
         return
 
-    results_df = pd.DataFrame(all_fold_metrics)
-    results_df.loc['average'] = results_df.mean()
-
-    # Rename columns for clarity
-    results_df = results_df.rename(columns={
-        'test_acc_epoch': 'test_accuracy',
-        'test_f1_epoch': 'test_f1',
-        'test_precision_epoch': 'test_precision',
-        'test_recall_epoch': 'test_recall'
-    })
-
-    # Add fold column
-    results_df.index.name = 'fold'
-    results_df = results_df.reset_index()
-    results_df['fold'] = results_df['fold'].apply(lambda x: str(x + 1) if isinstance(x, int) else x)
-
-    # --- 4. Save or Print Results ---
-    output_path = config.get('output', {}).get('nn_results_path')
-    if output_path:
-        file_ext = Path(output_path).suffix
-        try:
-            if file_ext == '.csv':
-                results_df.to_csv(output_path, index=False, float_format='%.4f')
-                print(f"\nResults successfully saved to {output_path}")
-            elif file_ext == '.md':
-                results_df.to_markdown(output_path, index=False, floatfmt='.4f')
-                print(f"\nResults successfully saved to {output_path}")
-            else:
-                print(f"\nUnsupported output format '{file_ext}'. Printing to console instead.")
-                print(results_df.to_string(float_format='%.4f', index=False))
-        except Exception as e:
-            print(f"\nError saving results to {output_path}: {e}")
-            print("Printing to console instead:")
-            print(results_df.to_string(float_format='%.4f', index=False))
-    else:
-        print(results_df.to_string(float_format='%.4f', index=False))
+    # Combine all fold reports
+    full_report_df = pd.concat(all_fold_reports)
     
-    print("\nIndividual fold metrics are also logged in TensorBoard.")
+    # Calculate the mean for each metric across all folds, excluding non-numeric and summary rows
+    numeric_cols = full_report_df.select_dtypes(include=np.number).columns.tolist()
+    numeric_cols.remove('fold')
+    mean_report_df = full_report_df[~full_report_df.index.isin(['accuracy', 'macro avg', 'weighted avg'])].groupby(full_report_df.index)[numeric_cols].mean()
+    
+    # Recalculate summary rows for the averaged report
+    mean_report_df.loc['accuracy', 'support'] = full_report_df[full_report_df.index == 'accuracy']['support'].sum() / num_folds
+    mean_report_df.loc['macro avg'] = mean_report_df.mean()
+    mean_report_df.loc['weighted avg'] = np.average(mean_report_df.iloc[:-2], weights=mean_report_df['support'].iloc[:-2], axis=0)
+    mean_report_df.loc['accuracy', list(mean_report_df.columns.drop('support'))] = np.nan # Accuracy row only has support
+
+    mean_report_df['fold'] = 'mean'
+    
+    # Combine into a final report
+    final_report_with_avg = pd.concat([full_report_df, mean_report_df.reset_index()])
+    
+    # Define output path
+    output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
+    output_dir.mkdir(exist_ok=True, parents=True)
+    csv_path = output_dir / "cross_validation_detailed_report.csv"
+
+    # Save to CSV
+    final_report_with_avg.to_csv(csv_path, float_format='%.4f')
+    print(f"\nDetailed cross-validation report saved to: {csv_path}")
+
+    # Print summary of averages
+    avg_mode = config.get('trainer', {}).get('metrics_average_mode', 'macro')
+    avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
+    print(f"\n--- Average Metrics Across Folds ({avg_mode.capitalize()}) ---")
+    print(f"Average Test Accuracy: {avg_metrics.get('test_acc_epoch', 0):.4f}")
+    print(f"Average Test F1-Score: {avg_metrics.get('test_f1_epoch', 0):.4f}")
+    print(f"Average Test Precision: {avg_metrics.get('test_precision_epoch', 0):.4f}")
+    print(f"Average Test Recall: {avg_metrics.get('test_recall_epoch', 0):.4f}")
+    print("\nIndividual fold metrics and checkpoints logged in the respective 'fold_X' directories.")
 
 
 if __name__ == "__main__":
