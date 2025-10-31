@@ -122,7 +122,7 @@ def main(config: dict):
 
         # --- 2c. Train XGBoost Model ---
         print("--- Training XGBoost model ---")
-        xgb_model = xgb.XGBClassifier(random_state=seed, use_label_encoder=False, eval_metric='mlogloss')
+        xgb_model = xgb.XGBClassifier(random_state=seed, eval_metric='mlogloss')
         xgb_model.fit(X_train_scaled, y_train)
 
         # --- 2d. Test this fold ---
