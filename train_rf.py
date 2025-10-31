@@ -88,18 +88,20 @@ def main(config: dict):
 
     # --- 2. Cross-Validation Setup ---
     num_folds = data_config.get('num_folds', 5)
+    is_loocv = (num_folds == -1)
 
-    if num_folds == -1:
+    if is_loocv:
         from sklearn.model_selection import LeaveOneOut
-        print("--- Using Leave-One-Out Cross-Validation ---")
+        print("--- Setting up Leave-One-Out Cross-Validation ---")
         cv_splitter = LeaveOneOut()
-        n_splits = len(X)
+        n_splits = cv_splitter.get_n_splits(X)
+        all_labels = []
+        all_preds = []
     else:
-        print(f"--- Using {num_folds}-Fold Stratified Cross-Validation ---")
+        print(f"--- Setting up Stratified {num_folds}-Fold Cross-Validation ---")
         cv_splitter = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
         n_splits = num_folds
-
-    all_fold_metrics = []
+        all_fold_metrics = []
 
     for fold, (train_indices, test_indices) in enumerate(cv_splitter.split(X, y)):
         print(f"\n===== FOLD {fold + 1} / {n_splits} =====")
@@ -122,58 +124,77 @@ def main(config: dict):
         # --- 2d. Test this fold ---
         print(f"--- Testing Fold {fold + 1} ---")
         y_pred = rf_model.predict(X_test_scaled)
-        
-        # Generate report
-        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
-        accuracy = accuracy_score(y_test, y_pred)
-        
-        avg_mode = config.get('trainer', {}).get('metrics_average_mode', 'macro')
-        avg_key = f'{avg_mode} avg'
 
-        fold_metrics = {
-            'test_accuracy': accuracy,
-            'test_f1': report[avg_key]['f1-score'],
-            'test_precision': report[avg_key]['precision'],
-            'test_recall': report[avg_key]['recall']
-        }
-        all_fold_metrics.append(fold_metrics)
-        
-        print(f"Fold {fold + 1} Accuracy: {accuracy:.4f}")
-        print(f"Fold {fold + 1} F1-Score ({avg_mode.capitalize()}): {report[avg_key]['f1-score']:.4f}")
+        if is_loocv:
+            # For LOOCV, collect labels and predictions
+            all_labels.extend(y_test)
+            all_preds.extend(y_pred)
+            acc = accuracy_score(y_test, y_pred)
+            print(f"Fold {fold + 1} Correct: {acc == 1.0}")
+        else:
+            # For k-fold, generate and store a report for each fold
+            report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            avg_mode = config.get('trainer', {}).get('metrics_average_mode', 'macro')
+            avg_key = f'{avg_mode} avg'
+
+            fold_metrics = {
+                'test_accuracy': accuracy,
+                'test_f1': report.get(avg_key, {}).get('f1-score', 0),
+                'test_precision': report.get(avg_key, {}).get('precision', 0),
+                'test_recall': report.get(avg_key, {}).get('recall', 0)
+            }
+            all_fold_metrics.append(fold_metrics)
+            
+            print(f"Fold {fold + 1} Accuracy: {accuracy:.4f}")
+            print(f"Fold {fold + 1} F1-Score ({avg_mode.capitalize()}): {fold_metrics['test_f1']:.4f}")
 
     # --- 3. Aggregate and Save/Print Final Results ---
     print("\n===== RANDOM FOREST CROSS-VALIDATION FINAL RESULTS ======")
-    
-    if not all_fold_metrics:
-        print("No test results found to generate a report.")
-        return
-
-    results_df = pd.DataFrame(all_fold_metrics)
-    results_df.loc['average'] = results_df.mean()
-
-    # Add fold column
-    results_df.index.name = 'fold'
-    results_df = results_df.reset_index()
-    results_df['fold'] = results_df['fold'].apply(lambda x: str(x + 1) if isinstance(x, int) else x)
-
-    # --- 4. Save or Print Results ---
     output_path = config.get('output', {}).get('rf_results_path')
-    if output_path:
-        file_ext = Path(output_path).suffix
-        try:
-            if file_ext == '.csv':
-                results_df.to_csv(output_path, index=False, float_format='%.4f')
-                print(f"\nResults successfully saved to {output_path}")
-            else:
-                print(f"\nUnsupported output format '{file_ext}'. Printing to console instead.")
-                print(results_df.to_string(float_format='%.4f', index=False))
-        except Exception as e:
-            print(f"\nError saving results to {output_path}: {e}")
-            print("Printing to console instead:")
-            print(results_df.to_string(float_format='%.4f', index=False))
+
+    if is_loocv:
+        # --- LOOCV: Generate a single report from all predictions ---
+        if not all_labels:
+            print("No test results found to generate a report.")
+            return
+
+        report = classification_report(all_labels, all_preds, output_dict=True, zero_division=0)
+        results_df = pd.DataFrame(report).transpose()
+        
+        print("\n--- Overall Metrics for Leave-One-Out ---")
+        print(results_df.to_string(float_format='%.4f'))
+        
+        if output_path:
+            try:
+                results_df.to_csv(output_path, float_format='%.4f')
+                print(f"\nOverall LOOCV report saved to {output_path}")
+            except Exception as e:
+                print(f"\nError saving results to {output_path}: {e}")
+
     else:
+        # --- k-fold: Aggregate fold reports and calculate averages ---
+        if not all_fold_metrics:
+            print("No test results found to generate a report.")
+            return
+
+        results_df = pd.DataFrame(all_fold_metrics)
+        results_df.loc['average'] = results_df.mean()
+
+        results_df.index.name = 'fold'
+        results_df = results_df.reset_index()
+        results_df['fold'] = results_df['fold'].apply(lambda x: str(x + 1) if isinstance(x, int) else x)
+
         print("\n--- Average Metrics Across Folds ---")
         print(results_df.to_string(float_format='%.4f', index=False))
+
+        if output_path:
+            try:
+                results_df.to_csv(output_path, index=False, float_format='%.4f')
+                print(f"\nResults successfully saved to {output_path}")
+            except Exception as e:
+                print(f"\nError saving results to {output_path}: {e}")
 
 if __name__ == "__main__":
     parser = ArgumentParser()

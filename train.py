@@ -111,7 +111,12 @@ def main(config: dict, checkpoint_path: str | None = None):
         cv_iterator = cv_splitter.split(metadata_df)
 
     all_fold_metrics = []
-    all_fold_reports = []
+    # Initialize containers for results based on CV strategy
+    if num_folds > 1:
+        all_fold_reports = []  # For k-fold
+    else:
+        all_labels = []  # For LOOCV
+        all_preds = []   # For LOOCV
 
     for fold, (train_val_indices, test_indices) in enumerate(cv_iterator):
         print(f"\n===== FOLD {fold + 1} / {num_folds} =====")
@@ -201,11 +206,76 @@ def main(config: dict, checkpoint_path: str | None = None):
         test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')
         all_fold_metrics.append(test_results[0])
 
-        # --- 2e. Generate and Store Detailed Report for this fold ---
+        # --- 2e. Collect results based on CV strategy ---
         y_true = model.test_labels.cpu().numpy()
         y_pred = model.test_preds.cpu().numpy()
+
+        if num_folds > 1:
+            # For k-fold, generate and store a report for each fold
+            if class_mapping:
+                class_mapping_int_keys = {int(k): v for k, v in class_mapping.items()}
+                target_names = [class_mapping_int_keys.get(i, str(i)) for i in range(config['model']['num_classes'])]
+            else:
+                target_names = [str(i) for i in range(config['model']['num_classes'])]
+
+            report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
+            report_df = pd.DataFrame(report).transpose()
+            report_df['fold'] = fold + 1
+            all_fold_reports.append(report_df)
+            print(f"Fold {fold + 1} Detailed Report generated.")
+        else:
+            # For LOOCV, just collect labels and predictions
+            all_labels.extend(y_true)
+            all_preds.extend(y_pred)
+            print(f"Fold {fold + 1} predictions collected.")
+
+
+    # --- 3. Aggregate, Save, and Print Final Results ---
+    print("\n===== CROSS-VALIDATION FINAL RESULTS ======")
+    output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
+    output_dir.mkdir(exist_ok=True, parents=True)
+
+    if num_folds > 1:
+        # --- k-fold: Aggregate fold reports and calculate averages ---
+        if not all_fold_reports:
+            print("No test results found to generate a report.")
+            return
+
+        full_report_df = pd.concat(all_fold_reports)
         
-        # Ensure class_mapping keys are integers for mapping
+        numeric_cols = full_report_df.select_dtypes(include=np.number).columns.tolist()
+        numeric_cols.remove('fold')
+        mean_report_df = full_report_df[~full_report_df.index.isin(['accuracy', 'macro avg', 'weighted avg'])].groupby(full_report_df.index)[numeric_cols].mean()
+        
+        mean_report_df.loc['accuracy', 'support'] = full_report_df[full_report_df.index == 'accuracy']['support'].sum() / num_folds
+        mean_report_df.loc['macro avg'] = mean_report_df.mean()
+        mean_report_df.loc['weighted avg'] = np.average(mean_report_df.iloc[:-2], weights=mean_report_df['support'].iloc[:-2], axis=0)
+        mean_report_df.loc['accuracy', list(mean_report_df.columns.drop('support'))] = np.nan
+
+        mean_report_df['fold'] = 'mean'
+        
+        final_report_with_avg = pd.concat([full_report_df, mean_report_df.reset_index()])
+        
+        csv_path = output_dir / "cross_validation_detailed_report.csv"
+        final_report_with_avg.to_csv(csv_path, float_format='%.4f')
+        print(f"\nDetailed k-fold cross-validation report saved to: {csv_path}")
+
+        avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
+        print(f"\n--- Average Metrics Across {num_folds} Folds ---")
+        print(f"Average Test Accuracy: {avg_metrics.get('test_acc_epoch', 0):.4f}")
+        print(f"Average Test F1-Score: {avg_metrics.get('test_f1_epoch', 0):.4f}")
+        print(f"Average Test Precision: {avg_metrics.get('test_precision_epoch', 0):.4f}")
+        print(f"Average Test Recall: {avg_metrics.get('test_recall_epoch', 0):.4f}")
+
+    else:
+        # --- LOOCV: Generate a single report from all predictions ---
+        if not all_labels:
+            print("No test results found to generate a report.")
+            return
+
+        y_true = np.array(all_labels)
+        y_pred = np.array(all_preds)
+
         if class_mapping:
             class_mapping_int_keys = {int(k): v for k, v in class_mapping.items()}
             target_names = [class_mapping_int_keys.get(i, str(i)) for i in range(config['model']['num_classes'])]
@@ -213,56 +283,24 @@ def main(config: dict, checkpoint_path: str | None = None):
             target_names = [str(i) for i in range(config['model']['num_classes'])]
 
         report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
-        report_df = pd.DataFrame(report).transpose()
+        final_report_df = pd.DataFrame(report).transpose()
+
+        csv_path = output_dir / "leave_one_out_report.csv"
+        final_report_df.to_csv(csv_path, float_format='%.4f')
+        print(f"\nOverall Leave-One-Out report saved to: {csv_path}")
+
+        print(f"\n--- Overall Metrics for Leave-One-Out ---")
+        # In classification_report's dict output, accuracy is a float, not a dict.
+        # It's included in the DataFrame under the 'accuracy' index.
+        accuracy_series = final_report_df.loc['accuracy']
+        accuracy = accuracy_series['support'] # The accuracy value is stored in an unusual place in the DataFrame.
+        macro_avg = final_report_df.loc['macro avg']
         
-        report_df['fold'] = fold + 1
-        all_fold_reports.append(report_df)
-        print(f"Fold {fold + 1} Detailed Report generated.")
+        print(f"Overall Test Accuracy: {accuracy:.4f}")
+        print(f"Overall Test F1-Score (Macro): {macro_avg['f1-score']:.4f}")
+        print(f"Overall Test Precision (Macro): {macro_avg['precision']:.4f}")
+        print(f"Overall Test Recall (Macro): {macro_avg['recall']:.4f}")
 
-
-    # --- 3. Aggregate, Save, and Print Final Results ---
-    print("\n===== CROSS-VALIDATION FINAL RESULTS ======")
-    
-    if not all_fold_reports:
-        print("No test results found to generate a report.")
-        return
-
-    # Combine all fold reports
-    full_report_df = pd.concat(all_fold_reports)
-    
-    # Calculate the mean for each metric across all folds, excluding non-numeric and summary rows
-    numeric_cols = full_report_df.select_dtypes(include=np.number).columns.tolist()
-    numeric_cols.remove('fold')
-    mean_report_df = full_report_df[~full_report_df.index.isin(['accuracy', 'macro avg', 'weighted avg'])].groupby(full_report_df.index)[numeric_cols].mean()
-    
-    # Recalculate summary rows for the averaged report
-    mean_report_df.loc['accuracy', 'support'] = full_report_df[full_report_df.index == 'accuracy']['support'].sum() / num_folds
-    mean_report_df.loc['macro avg'] = mean_report_df.mean()
-    mean_report_df.loc['weighted avg'] = np.average(mean_report_df.iloc[:-2], weights=mean_report_df['support'].iloc[:-2], axis=0)
-    mean_report_df.loc['accuracy', list(mean_report_df.columns.drop('support'))] = np.nan # Accuracy row only has support
-
-    mean_report_df['fold'] = 'mean'
-    
-    # Combine into a final report
-    final_report_with_avg = pd.concat([full_report_df, mean_report_df.reset_index()])
-    
-    # Define output path
-    output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
-    output_dir.mkdir(exist_ok=True, parents=True)
-    csv_path = output_dir / "cross_validation_detailed_report.csv"
-
-    # Save to CSV
-    final_report_with_avg.to_csv(csv_path, float_format='%.4f')
-    print(f"\nDetailed cross-validation report saved to: {csv_path}")
-
-    # Print summary of averages
-    avg_mode = config.get('trainer', {}).get('metrics_average_mode', 'macro')
-    avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
-    print(f"\n--- Average Metrics Across Folds ({avg_mode.capitalize()}) ---")
-    print(f"Average Test Accuracy: {avg_metrics.get('test_acc_epoch', 0):.4f}")
-    print(f"Average Test F1-Score: {avg_metrics.get('test_f1_epoch', 0):.4f}")
-    print(f"Average Test Precision: {avg_metrics.get('test_precision_epoch', 0):.4f}")
-    print(f"Average Test Recall: {avg_metrics.get('test_recall_epoch', 0):.4f}")
     print("\nIndividual fold metrics and checkpoints logged in the respective 'fold_X' directories.")
 
 
