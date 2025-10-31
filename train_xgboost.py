@@ -125,13 +125,6 @@ def main(config: dict):
             trainer_config = {}
         xgboost_params = trainer_config.get('xgboost_params', {})
 
-        if 'tree_method' in xgboost_params and xgboost_params['tree_method'] == 'gpu_hist':
-            print("WARNING: 'tree_method: gpu_hist' found in config. This is deprecated for device='cuda' and will be removed.")
-            del xgboost_params['tree_method']
-        if 'gpu_id' in xgboost_params:
-            print("WARNING: 'gpu_id' found in config. This is deprecated for device='cuda' and will be removed.")
-            del xgboost_params['gpu_id']
-
         # GPU強制（利用できなければ例外で止める）
         force_cuda = config.get('trainer', {}).get('force_cuda', True)
         if force_cuda:
