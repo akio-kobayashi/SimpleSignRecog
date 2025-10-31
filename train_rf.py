@@ -86,14 +86,23 @@ def main(config: dict):
     
     print(f"--- Feature extraction complete. Feature matrix shape: {X.shape} ---")
 
-    # --- 2. K-Fold Cross-Validation Setup ---
+    # --- 2. Cross-Validation Setup ---
     num_folds = data_config.get('num_folds', 5)
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
+
+    if num_folds == -1:
+        from sklearn.model_selection import LeaveOneOut
+        print("--- Using Leave-One-Out Cross-Validation ---")
+        cv_splitter = LeaveOneOut()
+        n_splits = len(X)
+    else:
+        print(f"--- Using {num_folds}-Fold Stratified Cross-Validation ---")
+        cv_splitter = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
+        n_splits = num_folds
 
     all_fold_metrics = []
 
-    for fold, (train_indices, test_indices) in enumerate(skf.split(X, y)):
-        print(f"\n===== FOLD {fold + 1} / {num_folds} =====")
+    for fold, (train_indices, test_indices) in enumerate(cv_splitter.split(X, y)):
+        print(f"\n===== FOLD {fold + 1} / {n_splits} =====")
 
         # --- 2a. Split data for this fold ---
         X_train, X_test = X[train_indices], X[test_indices]

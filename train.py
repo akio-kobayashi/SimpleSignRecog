@@ -8,7 +8,7 @@ import torch
 import pandas as pd
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split, LeaveOneOut
 from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
 
@@ -97,14 +97,23 @@ def main(config: dict, checkpoint_path: str | None = None):
         print(f"Found {len(class_mapping)} classes.")
 
 
-    # --- 2. K-Fold Cross-Validation Setup ---
+    # --- 2. Cross-Validation Setup ---
     num_folds = data_config.get('num_folds', 5)
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
+
+    if num_folds > 1:
+        print(f"--- Setting up Stratified {num_folds}-Fold Cross-Validation ---")
+        cv_splitter = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
+        cv_iterator = cv_splitter.split(metadata_df, metadata_df['class_label'])
+    else:
+        print("--- Setting up Leave-One-Out Cross-Validation ---")
+        cv_splitter = LeaveOneOut()
+        num_folds = cv_splitter.get_n_splits(metadata_df) # Update num_folds for reporting
+        cv_iterator = cv_splitter.split(metadata_df)
 
     all_fold_metrics = []
     all_fold_reports = []
 
-    for fold, (train_val_indices, test_indices) in enumerate(skf.split(metadata_df, metadata_df['class_label'])):
+    for fold, (train_val_indices, test_indices) in enumerate(cv_iterator):
         print(f"\n===== FOLD {fold + 1} / {num_folds} =====")
 
         # --- 2a. Split data for this fold ---
