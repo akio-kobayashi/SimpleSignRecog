@@ -123,8 +123,8 @@ def main(config: dict):
         trainer_config = config.get('trainer')
         if trainer_config is None:
             trainer_config = {}
-        xgboost_params = trainer_config.get('xgboost_params', {})
-
+        #xgboost_params = trainer_config.get('xgboost_params', {})
+        xgboost_params = {}
         # GPU強制（利用できなければ例外で止める）
         force_cuda = config.get('trainer', {}).get('force_cuda', True)
         if force_cuda:
