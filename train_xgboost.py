@@ -1,6 +1,3 @@
-
-
-
 import yaml
 import random
 import copy
@@ -128,29 +125,22 @@ def main(config: dict):
             trainer_config = {}
         xgboost_params = trainer_config.get('xgboost_params', {})
 
-        # Remove gpu_hist and gpu_id if they exist, as they are deprecated/handled differently in newer XGBoost versions
         if 'tree_method' in xgboost_params and xgboost_params['tree_method'] == 'gpu_hist':
             print("WARNING: 'tree_method: gpu_hist' found in config. This is deprecated for device='cuda' and will be removed.")
             del xgboost_params['tree_method']
         if 'gpu_id' in xgboost_params:
             print("WARNING: 'gpu_id' found in config. This is deprecated for device='cuda' and will be removed.")
             del xgboost_params['gpu_id']
-        
-        # Determine device based on config and availability
-        requested_device = xgboost_params.get('device', 'cpu')
-        if requested_device == 'cuda':
-            try:
-                # A simple way to check if GPU is available to XGBoost
-                temp_model = xgb.XGBClassifier(device='cuda', n_estimators=1)
-                temp_model.fit(np.array([[0,0]]), np.array([0])) # dummy fit
-                print("XGBoost GPU support detected and enabled using device='cuda'.")
-                xgboost_params['device'] = 'cuda'
-            except xgb.core.XGBoostError:
-                print("WARNING: XGBoost GPU support not found. Falling back to CPU. "
-                      "Please ensure XGBoost is installed with GPU support and CUDA is configured correctly.")
-                xgboost_params['device'] = 'cpu'
+
+        # GPU強制（利用できなければ例外で止める）
+        force_cuda = config.get('trainer', {}).get('force_cuda', True)
+        if force_cuda:
+            xgboost_params['device'] = 'cuda'
         else:
-            xgboost_params['device'] = 'cpu' # Ensure device is explicitly set to cpu if not cuda
+            xgboost_params['device'] = xgboost_params.get('device', 'cpu')
+
+        # 学習アルゴリズムはhistに固定（GPU/CPUの両方で正）
+        xgboost_params['tree_method'] = 'hist'            
 
         # Initialize XGBoost model with parameters from config and fixed ones
         final_xgboost_params = xgboost_params.copy()
@@ -162,7 +152,15 @@ def main(config: dict):
             eval_metric='mlogloss',
             **final_xgboost_params
         )
-        xgb_model.fit(X_train_scaled, y_train)
+        try:
+            xgb_model.fit(X_train_scaled, y_train)
+        except xgb.core.XGBoostError as e:
+            if 'device=cuda' in str(final_xgboost_params):
+                raise RuntimeError(
+                    "XGBoostがGPUを掴めませんでした。コンテナ/ドライバ/ビルドを確認してください。"
+                ) from e
+            else:
+                raise        
 
         # --- 2d. Test this fold ---
         print(f"--- Testing Fold {fold + 1} ---")
