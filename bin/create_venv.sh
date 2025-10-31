@@ -68,7 +68,7 @@ else
     tensorboard \
     transformers \
     onnxruntime-gpu \
-    xgboost[cuda]
+    xgboost
 fi
 
 echo "[venv] 動作確認"
