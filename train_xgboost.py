@@ -125,27 +125,32 @@ def main(config: dict):
         # Get XGBoost parameters from config, with defaults
         xgboost_params = config.get('trainer', {}).get('xgboost_params', {})
         
-        # Check for GPU support if GPU is requested
-        if xgboost_params.get('tree_method') == 'gpu_hist' or xgboost_params.get('predictor') == 'gpu_predictor':
+        # Determine device based on config and availability
+        requested_device = xgboost_params.get('device', 'cpu')
+        if requested_device == 'cuda':
             try:
                 # A simple way to check if GPU is available to XGBoost
-                # This might not be exhaustive but covers common cases
-                temp_model = xgb.XGBClassifier(tree_method='gpu_hist', predictor='gpu_predictor', n_estimators=1)
+                temp_model = xgb.XGBClassifier(device='cuda', n_estimators=1)
                 temp_model.fit(np.array([[0,0]]), np.array([0])) # dummy fit
-                print("XGBoost GPU support detected and enabled.")
+                print("XGBoost GPU support detected and enabled using device='cuda'.")
+                xgboost_params['device'] = 'cuda'
             except xgb.core.XGBoostError:
                 print("WARNING: XGBoost GPU support not found. Falling back to CPU. "
-                      "Please ensure XGBoost is installed with GPU support (e.g., `pip install xgboost[cuda]`).")
-                xgboost_params['tree_method'] = 'hist'
-                xgboost_params['predictor'] = 'cpu_predictor'
+                      "Please ensure XGBoost is installed with GPU support and CUDA is configured correctly.")
+                xgboost_params['device'] = 'cpu'
+        else:
+            xgboost_params['device'] = 'cpu' # Ensure device is explicitly set to cpu if not cuda
 
         # Initialize XGBoost model with parameters from config and fixed ones
+        final_xgboost_params = xgboost_params.copy()
+        if 'predictor' in final_xgboost_params:
+            del final_xgboost_params['predictor']
+
         xgb_model = xgb.XGBClassifier(
             random_state=seed,
             eval_metric='mlogloss',
-            **xgboost_params
+            **final_xgboost_params
         )
-        xgb_model.fit(X_train_scaled, y_train)
         xgb_model.fit(X_train_scaled, y_train)
 
         # --- 2d. Test this fold ---
