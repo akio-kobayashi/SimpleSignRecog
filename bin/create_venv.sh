@@ -67,7 +67,8 @@ else
     mediapipe \
     tensorboard \
     transformers \
-    onnxruntime-gpu
+    onnxruntime-gpu \
+    xgboost[cuda]
 fi
 
 echo "[venv] 動作確認"
