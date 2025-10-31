@@ -123,7 +123,10 @@ def main(config: dict):
         # --- 2c. Train XGBoost Model ---
         print("--- Training XGBoost model ---")
         # Get XGBoost parameters from config, with defaults
-        xgboost_params = config.get('trainer', {}).get('xgboost_params', {})
+        trainer_config = config.get('trainer')
+        if trainer_config is None:
+            trainer_config = {}
+        xgboost_params = trainer_config.get('xgboost_params', {})
 
         # Remove gpu_hist and gpu_id if they exist, as they are deprecated/handled differently in newer XGBoost versions
         if 'tree_method' in xgboost_params and xgboost_params['tree_method'] == 'gpu_hist':
