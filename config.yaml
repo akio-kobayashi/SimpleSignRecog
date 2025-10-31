@@ -45,9 +45,6 @@ trainer:
   accelerator: auto
   log_every_n_steps: 1
   xgboost_params:
-    # GPUを使用する場合は、tree_method: "gpu_hist", predictor: "gpu_predictor" に変更してください。
-    tree_method: "hist"
-    predictor: "cpu_predictor"
     # その他のXGBoostパラメータもここに追加できます (例: n_estimators, learning_rate, max_depthなど)
 
 # モデルチェックポイントの設定

@@ -124,6 +124,14 @@ def main(config: dict):
         print("--- Training XGBoost model ---")
         # Get XGBoost parameters from config, with defaults
         xgboost_params = config.get('trainer', {}).get('xgboost_params', {})
+
+        # Remove gpu_hist and gpu_id if they exist, as they are deprecated/handled differently in newer XGBoost versions
+        if 'tree_method' in xgboost_params and xgboost_params['tree_method'] == 'gpu_hist':
+            print("WARNING: 'tree_method: gpu_hist' found in config. This is deprecated for device='cuda' and will be removed.")
+            del xgboost_params['tree_method']
+        if 'gpu_id' in xgboost_params:
+            print("WARNING: 'gpu_id' found in config. This is deprecated for device='cuda' and will be removed.")
+            del xgboost_params['gpu_id']
         
         # Determine device based on config and availability
         requested_device = xgboost_params.get('device', 'cpu')
