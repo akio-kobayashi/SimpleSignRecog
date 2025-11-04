@@ -28,6 +28,7 @@ model:
   num_classes: 20
   channels: 128
   dropout: 0.2
+  right_context_size: 0 # New: 畳み込みで考慮する未来のフレーム数。0で完全な因果畳み込み
 
 # 最適化手法の設定
 optimizer:
