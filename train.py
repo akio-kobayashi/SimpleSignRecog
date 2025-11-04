@@ -1,3 +1,5 @@
+# 必要なライブラリをインポートします
+# ---------------------------------
 import yaml
 import random
 import copy
@@ -12,39 +14,46 @@ from sklearn.model_selection import StratifiedKFold, train_test_split, LeaveOneO
 from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
 
-# Import our custom modules
+# 自作のモジュールをインポートします
+# ---------------------------------
 from src.dataset import SignDataset, BucketBatchSampler, data_processing
 from src.solver import Solver
 
-# --- Reproducibility ---
+# --- 再現性のための設定 ---
 def set_seed(seed: int):
-    """Sets the seed for reproducibility."""
+    """
+    再現性のために乱数のシードを設定する関数。
+    これにより、何度実行しても同じ結果が得られるようになります。
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        # Ensure deterministic operations
+        # 決定的な（毎回同じ結果になる）演算を保証します
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
 def seed_worker(worker_id):
-    """Seeds worker processes for DataLoader."""
+    """
+    DataLoaderの各ワーカープロセスにシードを設定する関数。
+    マルチプロセスでデータを読み込む際にも再現性を確保します。
+    """
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
 def get_feature_dim(feature_config: dict) -> int:
     """
-    config.yamlのfeaturesセクションに基づいて、特徴量の次元数を計算する。
+    config.yamlのfeaturesセクションに基づいて、特徴量の次元数を計算する関数。
+    設定に応じて、モデルに入力される特徴ベクトルのサイズを決定します。
     """
     # ベースとなる座標の次元数 (x, y, z * 21ランドマーク * 2手)
     BASE_COORD_DIM = 21 * 3 * 2
     
     # 既存の特徴量パイプラインの次元数
-    # calculate_featuresは [pos(63*2) + vel(63*2) + acc(63*2) + geo(4*2)] だが、
-    # モデルは片手ずつ処理するので、入力は pos(63)+vel(63)+acc(63)+geo(4) = 193次元。両手で386次元。
+    # pos(63*2) + vel(63*2) + acc(63*2) + geo(4*2) のうち、片手分が入力となる
     EXISTING_PIPELINE_DIM = 193 * 2
 
     normalize_mode = feature_config.get('normalize_mode', 'normalize_landmarks')
@@ -52,139 +61,149 @@ def get_feature_dim(feature_config: dict) -> int:
     use_paper_speed = paper_conf.get('speed', False)
     use_paper_anthropometric = paper_conf.get('anthropometric', False)
 
+    # 論文ベースの特徴量計算モードかどうかを判定
     is_paper_mode = normalize_mode in ['current_wrist', 'first_wrist'] or use_paper_speed or use_paper_anthropometric
 
     if is_paper_mode:
-        # 論文ベースのパイプライン
-        dim = BASE_COORD_DIM # 座標は常に出力される
+        # 論文ベースのパイプラインの場合
+        dim = BASE_COORD_DIM # 座標は常に出力
         if use_paper_speed:
-            dim += BASE_COORD_DIM # 速度特徴量
+            dim += BASE_COORD_DIM # 速度特徴量を追加
         if use_paper_anthropometric:
-            # 21 C 2 = 210ペア * 2手
-            dim += 210 * 2
+            # 21個のランドマークから2つを選ぶ組み合わせの数 (21 C 2 = 210) * 2手
+            dim += 210 * 2 # 人体測定学的特徴量を追加
         return dim
     else:
-        # 既存のパイプライン
+        # 既存のパイプラインの場合
         return EXISTING_PIPELINE_DIM
 
 def main(config: dict, checkpoint_path: str | None = None):
     """
-    Main K-Fold Cross-Validation training pipeline.
+    K分割交差検証（K-Fold Cross-Validation）を用いたメインの学習パイプライン。
     """
-    # --- 0. Set Seed & Calculate Feature Dimension ---
+    # --- 0. シードの設定と特徴量次元数の計算 ---
     if "seed" in config:
         set_seed(config["seed"])
-        print(f"--- Seed set to {config['seed']} for reproducibility ---")
+        print(f"--- 再現性のためにシードを {config['seed']} に設定しました ---")
 
-    # Calculate feature dimension from config and update the config dict
+    # configに基づいて特徴量の次元数を計算し、config辞書を更新
     feature_dim = get_feature_dim(config.get('features', {}))
     config['model']['input_dim'] = feature_dim
-    print(f"--- Feature dimension calculated based on config: {feature_dim} ---")
+    print(f"--- configに基づき、特徴量の次元数を {feature_dim} と計算しました ---")
     
+    # DataLoaderのシャッフルを再現可能にするためのジェネレータ
     g = torch.Generator()
     if "seed" in config:
         g.manual_seed(config["seed"])
 
-    # --- 1. Load Full Dataset ---
-    print("--- Loading Full Dataset ---")
+    # --- 1. 全データセットの読み込み ---
+    print("--- 全データセットを読み込んでいます ---")
     data_config = config['data']
     metadata_df = pd.read_csv(data_config['metadata_path'])
     
-    # Create a mapping from class index to a readable name if available
+    # クラスのインデックスとクラス名の対応表を作成（もしあれば）
     class_mapping = None
     if 'class_name' in metadata_df.columns:
         class_mapping = pd.Series(metadata_df['class_name'].values, index=metadata_df['class_label']).to_dict()
-        print(f"Found {len(class_mapping)} classes.")
+        print(f"{len(class_mapping)} 個のクラスが見つかりました。")
 
 
-    # --- 2. Cross-Validation Setup ---
+    # --- 2. 交差検証 (Cross-Validation) の設定 ---
     num_folds = data_config.get('num_folds', 5)
 
     if num_folds > 1:
-        print(f"--- Setting up Stratified {num_folds}-Fold Cross-Validation ---")
+        print(f"--- 層化 {num_folds} 分割交差検証を設定します ---")
         cv_splitter = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
         cv_iterator = cv_splitter.split(metadata_df, metadata_df['class_label'])
     else:
-        print("--- Setting up Leave-One-Out Cross-Validation ---")
+        print("--- Leave-One-Out 交差検証を設定します ---")
         cv_splitter = LeaveOneOut()
-        num_folds = cv_splitter.get_n_splits(metadata_df) # Update num_folds for reporting
+        num_folds = cv_splitter.get_n_splits(metadata_df) # レポート用に分割数を更新
         cv_iterator = cv_splitter.split(metadata_df)
 
     all_fold_metrics = []
-    # Initialize containers for results based on CV strategy
+    # CV戦略に応じて結果を格納するコンテナを初期化
     if num_folds > 1:
-        all_fold_reports = []  # For k-fold
+        all_fold_reports = []  # k-fold用
     else:
-        all_labels = []  # For LOOCV
-        all_preds = []   # For LOOCV
+        all_labels = []  # LOOCV用
+        all_preds = []   # LOOCV用
 
+    # 交差検証のループを開始
     for fold, (train_val_indices, test_indices) in enumerate(cv_iterator):
-        print(f"\n===== FOLD {fold + 1} / {num_folds} =====")
+        print(f"\n===== 分割 {fold + 1} / {num_folds} =====")
 
-        # --- 2a. Split data for this fold ---
+        # --- 2a. この分割でのデータ分割 ---
         train_val_df = metadata_df.iloc[train_val_indices].reset_index(drop=True)
         test_df = metadata_df.iloc[test_indices].reset_index(drop=True)
 
+        # 訓練・検証データをさらに訓練用と検証用に分割
         train_df, val_df = train_test_split(
             train_val_df,
             test_size=data_config['validation_split_ratio'],
             random_state=config.get('seed', 42),
-            stratify=train_val_df['class_label']
+            stratify=train_val_df['class_label'] # クラスの比率を保って分割
         )
 
         train_df = train_df.reset_index(drop=True)
         val_df = val_df.reset_index(drop=True)
 
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+        print(f"訓練: {len(train_df)}, 検証: {len(val_df)}, テスト: {len(test_df)}")
 
-        # --- 2b. Create Datasets and DataLoaders for this fold ---
-        # For validation and test, create a config with augmentations disabled
+        # --- 2b. データセットとデータローダーの作成 ---
+        # 検証用とテスト用ではデータ拡張を無効にする
         eval_config = copy.deepcopy(config)
         eval_config['data']['augmentation'] = {}
 
+        # 訓練、検証、テスト用の各データセットを作成
         train_dataset = SignDataset(
             metadata_df=train_df,
             data_base_dir=data_config['source_landmark_dir'],
-            config=config,
+            config=config, # 訓練データには拡張を適用
             sort_by_length=data_config.get('use_bucketing', False)
         )
         val_dataset = SignDataset(
             metadata_df=val_df,
             data_base_dir=data_config['source_landmark_dir'],
-            config=eval_config,
+            config=eval_config, # 検証データには拡張を適用しない
             sort_by_length=False
         )
         test_dataset = SignDataset(
             metadata_df=test_df,
             data_base_dir=data_config['source_landmark_dir'],
-            config=eval_config,
+            config=eval_config, # テストデータには拡張を適用しない
             sort_by_length=False
         )
 
+        # データローダーの準備
         if data_config.get('use_bucketing', False):
+            # バケットサンプリング（似た長さのデータをミニバッチにする）を使用する場合
             train_sampler = BucketBatchSampler(train_dataset, batch_size=data_config['batch_size'])
             train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=data_processing, num_workers=4, worker_init_fn=seed_worker)
         else:
+            # 通常のシャッフルを使用する場合
             train_loader = DataLoader(train_dataset, batch_size=data_config['batch_size'], shuffle=True, collate_fn=data_processing, num_workers=4, worker_init_fn=seed_worker, generator=g)
 
         valid_loader = DataLoader(val_dataset, batch_size=data_config['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=4)
         test_loader = DataLoader(test_dataset, batch_size=data_config['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=4)
 
-        # --- 2c. Initialize Model and Trainer for this fold ---
+        # --- 2c. モデルとトレーナーの初期化 ---
         if 'scheduler' in config and 'total_steps' not in config['scheduler']:
-            # Recalculate total_steps for each fold to be precise
+            # スケジューラの総ステップ数を各分割で再計算
             num_devices = trainer.num_devices if 'trainer' in locals() and hasattr(trainer, 'num_devices') else 1
             effective_batch_size = data_config['batch_size'] * num_devices
             total_steps = (len(train_dataset) // effective_batch_size) * config['trainer']['max_epochs']
             config['scheduler']['total_steps'] = total_steps
-            print(f"Scheduler total_steps calculated for fold {fold + 1}: {total_steps}")
+            print(f"スケジューラの総ステップ数を {total_steps} に設定しました (分割 {fold + 1}) ")
 
+        # Solverクラス（PyTorch Lightningモジュール）を初期化
         model = Solver(config)
 
-        # Define a unique directory for this fold's logs and checkpoints
+        # この分割用のログとチェックポイントの保存先を定義
         fold_log_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"]
         logger = TensorBoardLogger(save_dir=str(fold_log_dir.parent), name=config["logger"]["name"], version=f"fold_{fold}")
         
+        # チェックポイントの設定
         checkpoint_conf = {k: v for k, v in config["checkpoint"].items() if k != 'dirpath'}
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             dirpath=str(Path(logger.log_dir) / "checkpoints"),
@@ -192,26 +211,28 @@ def main(config: dict, checkpoint_path: str | None = None):
             filename=f"{{epoch}}-{{val_loss:.2f}}"
         )
 
+        # PyTorch LightningのTrainerを初期化
         trainer = pl.Trainer(
-            callbacks=[checkpoint_callback],
-            logger=logger,
-            **config["trainer"]
+            callbacks=[checkpoint_callback], # コールバック（チェックポイント保存など）を設定
+            logger=logger, # ロガー（TensorBoardなど）を設定
+            **config["trainer"] # エポック数、GPU設定などをconfigから渡す
         )
 
-        # --- 2d. Train and Test this fold ---
-        print(f"--- Training Fold {fold + 1} ---")
+        # --- 2d. この分割での訓練とテスト ---
+        print(f"--- 分割 {fold + 1} の訓練を開始します ---")
         trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
-        print(f"--- Testing Fold {fold + 1} ---")
+        print(f"--- 分割 {fold + 1} のテストを実行します ---")
+        # 最良のモデル（val_lossが最小）を使ってテストを実行
         test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')
         all_fold_metrics.append(test_results[0])
 
-        # --- 2e. Collect results based on CV strategy ---
-        y_true = model.test_labels.cpu().numpy()
-        y_pred = model.test_preds.cpu().numpy()
+        # --- 2e. CV戦略に基づいた結果の収集 ---
+        y_true = model.test_labels.cpu().numpy() # 正解ラベル
+        y_pred = model.test_preds.cpu().numpy() # 予測ラベル
 
         if num_folds > 1:
-            # For k-fold, generate and store a report for each fold
+            # k-foldの場合、各分割のレポートを生成・保存
             if class_mapping:
                 class_mapping_int_keys = {int(k): v for k, v in class_mapping.items()}
                 target_names = [class_mapping_int_keys.get(i, str(i)) for i in range(config['model']['num_classes'])]
@@ -222,31 +243,33 @@ def main(config: dict, checkpoint_path: str | None = None):
             report_df = pd.DataFrame(report).transpose()
             report_df['fold'] = fold + 1
             all_fold_reports.append(report_df)
-            print(f"Fold {fold + 1} Detailed Report generated.")
+            print(f"分割 {fold + 1} の詳細レポートを生成しました。")
         else:
-            # For LOOCV, just collect labels and predictions
+            # LOOCVの場合、ラベルと予測を収集するだけ
             all_labels.extend(y_true)
             all_preds.extend(y_pred)
-            print(f"Fold {fold + 1} predictions collected.")
+            print(f"分割 {fold + 1} の予測結果を収集しました。")
 
 
-    # --- 3. Aggregate, Save, and Print Final Results ---
-    print("\n===== CROSS-VALIDATION FINAL RESULTS ======")
+    # --- 3. 最終結果の集計、保存、表示 ---
+    print("\n===== 交差検証の最終結果 ======")
     output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
     output_dir.mkdir(exist_ok=True, parents=True)
 
     if num_folds > 1:
-        # --- k-fold: Aggregate fold reports and calculate averages ---
+        # --- k-fold: 分割レポートを集計し、平均を計算 ---
         if not all_fold_reports:
-            print("No test results found to generate a report.")
+            print("レポートを生成するためのテスト結果がありません。")
             return
 
         full_report_df = pd.concat(all_fold_reports)
         
+        # 数値列のみを対象に平均を計算
         numeric_cols = full_report_df.select_dtypes(include=np.number).columns.tolist()
         numeric_cols.remove('fold')
         mean_report_df = full_report_df[~full_report_df.index.isin(['accuracy', 'macro avg', 'weighted avg'])].groupby(full_report_df.index)[numeric_cols].mean()
         
+        # accuracy, macro avg, weighted avgの行を計算して追加
         mean_report_df.loc['accuracy', 'support'] = full_report_df[full_report_df.index == 'accuracy']['support'].sum() / num_folds
         mean_report_df.loc['macro avg'] = mean_report_df.mean()
         mean_report_df.loc['weighted avg'] = np.average(mean_report_df.iloc[:-2], weights=mean_report_df['support'].iloc[:-2], axis=0)
@@ -256,21 +279,23 @@ def main(config: dict, checkpoint_path: str | None = None):
         
         final_report_with_avg = pd.concat([full_report_df, mean_report_df.reset_index()])
         
+        # 詳細レポートをCSVに保存
         csv_path = output_dir / "cross_validation_detailed_report.csv"
         final_report_with_avg.to_csv(csv_path, float_format='%.4f')
-        print(f"\nDetailed k-fold cross-validation report saved to: {csv_path}")
+        print(f"\n詳細なk-fold交差検証レポートを保存しました: {csv_path}")
 
+        # 主要な評価指標の平均値を表示
         avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
-        print(f"\n--- Average Metrics Across {num_folds} Folds ---")
-        print(f"Average Test Accuracy: {avg_metrics.get('test_acc_epoch', 0):.4f}")
-        print(f"Average Test F1-Score: {avg_metrics.get('test_f1_epoch', 0):.4f}")
-        print(f"Average Test Precision: {avg_metrics.get('test_precision_epoch', 0):.4f}")
-        print(f"Average Test Recall: {avg_metrics.get('test_recall_epoch', 0):.4f}")
+        print(f"\n--- {num_folds} 分割の平均評価指標 ---")
+        print(f"平均テスト正解率: {avg_metrics.get('test_acc_epoch', 0):.4f}")
+        print(f"平均テストF1スコア: {avg_metrics.get('test_f1_epoch', 0):.4f}")
+        print(f"平均テスト適合率: {avg_metrics.get('test_precision_epoch', 0):.4f}")
+        print(f"平均テスト再現率: {avg_metrics.get('test_recall_epoch', 0):.4f}")
 
     else:
-        # --- LOOCV: Generate a single report from all predictions ---
+        # --- LOOCV: 全ての予測から単一のレポートを生成 ---
         if not all_labels:
-            print("No test results found to generate a report.")
+            print("レポートを生成するためのテスト結果がありません。")
             return
 
         y_true = np.array(all_labels)
@@ -285,34 +310,37 @@ def main(config: dict, checkpoint_path: str | None = None):
         report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
         final_report_df = pd.DataFrame(report).transpose()
 
+        # レポートをCSVに保存
         csv_path = output_dir / "leave_one_out_report.csv"
         final_report_df.to_csv(csv_path, float_format='%.4f')
-        print(f"\nOverall Leave-One-Out report saved to: {csv_path}")
+        print(f"\nLeave-One-Outの総合レポートを保存しました: {csv_path}")
 
-        print(f"\n--- Overall Metrics for Leave-One-Out ---")
-        # In classification_report's dict output, accuracy is a float, not a dict.
-        # It's included in the DataFrame under the 'accuracy' index.
+        print(f"\n--- Leave-One-Outの総合評価指標 ---")
         accuracy_series = final_report_df.loc['accuracy']
-        accuracy = accuracy_series['support'] # The accuracy value is stored in an unusual place in the DataFrame.
+        accuracy = accuracy_series['support']
         macro_avg = final_report_df.loc['macro avg']
         
-        print(f"Overall Test Accuracy: {accuracy:.4f}")
-        print(f"Overall Test F1-Score (Macro): {macro_avg['f1-score']:.4f}")
-        print(f"Overall Test Precision (Macro): {macro_avg['precision']:.4f}")
-        print(f"Overall Test Recall (Macro): {macro_avg['recall']:.4f}")
+        print(f"総合テスト正解率: {accuracy:.4f}")
+        print(f"総合テストF1スコア (Macro): {macro_avg['f1-score']:.4f}")
+        print(f"総合テスト適合率 (Macro): {macro_avg['precision']:.4f}")
+        print(f"総合テスト再現率 (Macro): {macro_avg['recall']:.4f}")
 
-    print("\nIndividual fold metrics and checkpoints logged in the respective 'fold_X' directories.")
+    print("\n各分割の個別のメトリクスとチェックポイントは、それぞれの 'fold_X' ディレクトリに記録されています。")
 
 
+# このスクリプトが直接実行された場合にのみ以下のコードが実行されます
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml", help="YAML形式の設定ファイル")
     parser.add_argument("--checkpoint", type=str, default=None, help="モデルのチェックポイント（CVでは非推奨）")
     args = parser.parse_args()
 
+    # 高速な行列計算のためのPyTorch設定
     torch.set_float32_matmul_precision("high")
 
+    # 設定ファイルを読み込み
     with open(args.config, "r") as yf:
         config = yaml.safe_load(yf)
 
+    # メイン関数を実行
     main(config, checkpoint_path=args.checkpoint)

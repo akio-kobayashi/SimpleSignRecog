@@ -159,7 +159,6 @@ def normalize_landmarks(landmarks: np.ndarray) -> np.ndarray:
 
     return normalized_landmarks
 
-
 def canonical_normalize_landmarks(landmarks: np.ndarray) -> np.ndarray:
     """
     正準変換を用いてランドマーク座標を正規化する関数。
@@ -241,7 +240,6 @@ def canonical_normalize_landmarks(landmarks: np.ndarray) -> np.ndarray:
             normalized_landmarks[i, hand_data_slice] = transformed_hand.flatten()
 
     return normalized_landmarks
-
 
 def smooth_landmarks(landmarks: np.ndarray) -> np.ndarray:
     """
@@ -344,10 +342,9 @@ def calculate_features(landmarks: np.ndarray) -> np.ndarray:
     return final_features
 
 
-# --- Gil-Martín et al. (ICAART 2025) Feature Implementations ---
-# The following functions are implementations of the feature engineering techniques
-# described in "Hand Gesture Recognition Using MediaPipe Landmarks and Deep Learning Networks"
-# by Gil-Martín et al. (ICAART 2025).
+# --- Gil-Martín et al. (ICAART 2025) 論文の特徴量実装 ---
+# 以下の関数群は、"Hand Gesture Recognition Using MediaPipe Landmarks and Deep Learning Networks"
+# (Gil-Martín et al., ICAART 2025) で記述された特徴量エンジニアリング手法の実装です。
 
 def normalize_by_current_wrist(landmarks: np.ndarray) -> np.ndarray:
     """
