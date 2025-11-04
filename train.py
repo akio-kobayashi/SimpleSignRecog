@@ -110,8 +110,9 @@ def main(config: dict, checkpoint_path: str | None = None):
 
     # --- 2. 交差検証 (Cross-Validation) の設定 ---
     num_folds = data_config.get('num_folds', 5)
+    is_loocv = num_folds <= 1
 
-    if num_folds > 1:
+    if not is_loocv:
         print(f"--- 層化 {num_folds} 分割交差検証を設定します ---")
         cv_splitter = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=config.get('seed', 42))
         cv_iterator = cv_splitter.split(metadata_df, metadata_df['class_label'])
@@ -123,7 +124,7 @@ def main(config: dict, checkpoint_path: str | None = None):
 
     all_fold_metrics = []
     # CV戦略に応じて結果を格納するコンテナを初期化
-    if num_folds > 1:
+    if not is_loocv:
         all_fold_reports = []  # k-fold用
     else:
         all_labels = []  # LOOCV用
@@ -241,7 +242,7 @@ def main(config: dict, checkpoint_path: str | None = None):
         y_true = model.test_labels.cpu().numpy() # 正解ラベル
         y_pred = model.test_preds.cpu().numpy() # 予測ラベル
 
-        if num_folds > 1:
+        if not is_loocv:
             # k-foldの場合、各分割のレポートを生成・保存
             if class_mapping:
                 class_mapping_int_keys = {int(k): v for k, v in class_mapping.items()}
@@ -266,7 +267,7 @@ def main(config: dict, checkpoint_path: str | None = None):
     output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
     output_dir.mkdir(exist_ok=True, parents=True)
 
-    if num_folds > 1:
+    if not is_loocv:
         # --- k-fold: 分割レポートを集計し、平均を計算 ---
         if not all_fold_reports:
             print("レポートを生成するためのテスト結果がありません。")
