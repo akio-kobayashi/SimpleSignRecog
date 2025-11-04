@@ -54,10 +54,13 @@ class Solver(pl.LightningModule):
         時系列の予測値(log_probs)と正解ラベルから各評価指標を計算する。
         ここでは、時間軸全体で最も確率の高かったクラスを予測結果とする簡易的な手法をとる。
         """
-        # log_probs: (T, B, C)
+        # log_probs: (T, B, C+1)
         # labels: (B,)
+        # blankトークンを除いたクラス確率を取得 (最後の次元がblank)
+        log_probs_without_blank = log_probs[:, :, :-1]
+
         # 時間軸に沿って各クラスの最大確率を取得
-        max_probs_per_class, _ = torch.max(log_probs.permute(1, 0, 2).exp(), dim=1) # (B, C)
+        max_probs_per_class, _ = torch.max(log_probs_without_blank.permute(1, 0, 2).exp(), dim=1) # (B, C)
         preds = torch.argmax(max_probs_per_class, dim=1)
 
         # 各評価指標を計算
