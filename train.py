@@ -212,10 +212,15 @@ def main(config: dict, checkpoint_path: str | None = None):
         )
 
         # PyTorch LightningのTrainerを初期化
+        # Trainerに渡す設定と、Solver/他のロジックで使う設定を分離
+        trainer_config = config["trainer"].copy()
+        trainer_config.pop("metrics_average_mode", None)  # Solver用なのでTrainerからは削除
+        trainer_config.pop("xgboost_params", None)       # XGBoost用なのでTrainerからは削除
+
         trainer = pl.Trainer(
             callbacks=[checkpoint_callback], # コールバック（チェックポイント保存など）を設定
             logger=logger, # ロガー（TensorBoardなど）を設定
-            **config["trainer"] # エポック数、GPU設定などをconfigから渡す
+            **trainer_config # 不要な引数を削除したconfigを渡す
         )
 
         # --- 2d. この分割での訓練とテスト ---
