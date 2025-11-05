@@ -63,17 +63,36 @@ class Solver(pl.LightningModule):
     def _calculate_metrics(self, log_probs, labels):
         """
         時系列の予測値(log_probs)と正解ラベルから各評価指標を計算する。
-        ここでは、時間軸全体で最も確率の高かったクラスを予測結果とする簡易的な手法をとる。
+        デコード方式として、Greedy Decode（Best Path Decode）を行い、
+        その結果から最も多く出現した非blankクラスを予測結果とする。
         """
         # log_probs: (T, B, C+1)
         # labels: (B,)
-        # blankトークンを除いたクラス確率を取得 (最後の次元がblank)
-        log_probs_without_blank = log_probs[:, :, :-1]
+        
+        # 1. Greedy Decode (Best Path)
+        # 各タイムステップで最も確率の高いクラスインデックスを取得
+        best_path = torch.argmax(log_probs, dim=2) # (T, B)
+        
+        # 2. バッチ内の各サンプルに対して多数決で予測クラスを決定
+        preds = []
+        for i in range(best_path.size(1)): # Batch次元でループ
+            path_for_sample = best_path[:, i]
+            
+            # blankトークン (C) を除外
+            non_blank_path = path_for_sample[path_for_sample != self.config['model']['num_classes']]
+            
+            if non_blank_path.numel() > 0:
+                # 最も多く出現したクラスを予測結果とする
+                pred = torch.mode(non_blank_path).values
+                preds.append(pred)
+            else:
+                # 非blankの予測が一つもなかった場合
+                # (代替案: 最も確率の高い非blankクラスを選ぶなど)
+                # ここでは暫定的に最初のクラス(0)を予測とする
+                preds.append(torch.tensor(0, device=self.device))
 
-        # 時間軸に沿って各クラスの最大確率を取得
-        max_probs_per_class, _ = torch.max(log_probs_without_blank.permute(1, 0, 2).exp(), dim=1) # (B, C)
-        preds = torch.argmax(max_probs_per_class, dim=1)
-
+        preds = torch.stack(preds)
+        
         # 各評価指標を計算
         f1 = self.f1(preds, labels)
         acc = self.acc(preds, labels)
