@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import pandas as pd
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 from sklearn.model_selection import StratifiedKFold, train_test_split, LeaveOneOut
 from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
@@ -202,7 +202,12 @@ def main(config: dict, checkpoint_path: str | None = None):
 
         # この分割用のログとチェックポイントの保存先を定義
         fold_log_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"]
-        logger = TensorBoardLogger(save_dir=str(fold_log_dir.parent), name=config["logger"]["name"], version=f"fold_{fold}")
+        
+        # TensorBoardとCSVの両方でロギングを行う
+        logger = [
+            TensorBoardLogger(save_dir=str(fold_log_dir.parent), name=config["logger"]["name"], version=f"fold_{fold}"),
+            CSVLogger(save_dir=str(fold_log_dir.parent), name=config["logger"]["name"], version=f"fold_{fold}")
+        ]
         
         # チェックポイントの設定
         # config.yamlのdirpathを尊重しつつ、foldごとにサブディレクトリを作成
@@ -226,7 +231,7 @@ def main(config: dict, checkpoint_path: str | None = None):
 
         trainer = pl.Trainer(
             callbacks=[checkpoint_callback], # コールバック（チェックポイント保存など）を設定
-            logger=logger, # ロガー（TensorBoardなど）を設定
+            logger=logger, # ロガーのリストを設定
             **trainer_config # 不要な引数を削除したconfigを渡す
         )
 
@@ -238,7 +243,8 @@ def main(config: dict, checkpoint_path: str | None = None):
 
         # テスト前に、posteriogram保存のための情報をSolverに渡す
         model.class_mapping = class_mapping
-        model.posteriogram_dir = Path(logger.log_dir) / "posteriograms"
+        # trainer.log_dir は loggerリストの最初のロガーのパスを指す
+        model.posteriogram_dir = Path(trainer.log_dir) / "posteriograms"
 
         # 最良のモデル（val_lossが最小）を使ってテストを実行
         test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')
