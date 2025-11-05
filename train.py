@@ -220,7 +220,7 @@ def main(config: dict, checkpoint_path: str | None = None):
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             dirpath=str(fold_checkpoint_dir),
             **checkpoint_conf,
-            filename=f"{epoch}-{val_loss:.2f}"
+            filename="{epoch}-{val_loss:.2f}"
         )
 
         # PyTorch LightningのTrainerを初期化
