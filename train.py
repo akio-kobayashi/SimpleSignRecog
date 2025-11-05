@@ -205,11 +205,17 @@ def main(config: dict, checkpoint_path: str | None = None):
         logger = TensorBoardLogger(save_dir=str(fold_log_dir.parent), name=config["logger"]["name"], version=f"fold_{fold}")
         
         # チェックポイントの設定
+        # config.yamlのdirpathを尊重しつつ、foldごとにサブディレクトリを作成
+        base_dir = Path(config["checkpoint"]["dirpath"])
+        fold_checkpoint_dir = base_dir / f"fold_{fold}"
+        
+        # dirpath以外の設定をconfigから取得
         checkpoint_conf = {k: v for k, v in config["checkpoint"].items() if k != 'dirpath'}
+        
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
-            dirpath=str(Path(logger.log_dir) / "checkpoints"),
+            dirpath=str(fold_checkpoint_dir),
             **checkpoint_conf,
-            filename=f"{{epoch}}-{{val_loss:.2f}}"
+            filename=f"{epoch}-{val_loss:.2f}"
         )
 
         # PyTorch LightningのTrainerを初期化
