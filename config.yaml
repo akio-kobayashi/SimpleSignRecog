@@ -24,6 +24,22 @@ features:
 
 # モデルのアーキテクチャ設定
 model:
+  # --- 使用するモデルの指定 ---
+  # module_path: 使用するモデルクラスが定義されているファイルへのパス
+  # class_name: 使用するモデルのクラス名
+  module_path: "src.model"
+  class_name: "TwoStreamCNN"
+
+  # --- ST-GCNモデルを使用する場合の例 ---
+  # module_path: "src.stgcn_model"
+  # class_name: "STGCNModel"
+  # # ST-GCN用のハイパーパラメータ (TwoStreamCNNのパラメータは無視される)
+  # channels: 64
+  # dropout: 0.2
+  # num_blocks: 4
+  # temporal_kernel_size: 9
+
+  # --- TwoStreamCNN / 共通のハイパーパラメータ ---
   input_dim: 386 # この値は train.py で features の設定に基づいて自動計算・上書きされます
   num_classes: 20
   channels: 128

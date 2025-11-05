@@ -5,9 +5,9 @@ import pytorch_lightning as pl
 from torchmetrics.classification import MulticlassF1Score, MulticlassAccuracy, MulticlassPrecision, MulticlassRecall
 from pathlib import Path
 import numpy as np
+import importlib
 
-# 自作のモジュールをインポート
-from src.model import TwoStreamCNN
+# from src.model import TwoStreamCNN # 動的にインポートするためコメントアウト
 
 class Solver(pl.LightningModule):
     """
@@ -22,8 +22,19 @@ class Solver(pl.LightningModule):
         self.save_hyperparameters() # configの内容をハイパーパラメータとして保存
         self.config = config
 
-        # --- モデルの初期化 ---
-        self.model = TwoStreamCNN(**self.config['model'])
+        # --- モデルの動的初期化 ---
+        # configからモデルのパスとクラス名を取得し、動的にインスタンス化する
+        model_params = self.config['model'].copy()
+        module_path = model_params.pop('module_path')
+        class_name = model_params.pop('class_name')
+        
+        try:
+            module = importlib.import_module(module_path)
+            model_class = getattr(module, class_name)
+        except (ImportError, AttributeError) as e:
+            raise type(e)(f"Failed to import model '{class_name}' from '{module_path}': {e}")
+            
+        self.model = model_class(**model_params)
 
         # --- 損失関数の定義 ---
         # CTC損失を使用。blankトークンはクラスインデックスの末尾 (num_classes) と仮定
