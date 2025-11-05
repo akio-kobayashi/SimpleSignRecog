@@ -4,10 +4,10 @@ import torch.optim as optim
 import pytorch_lightning as pl
 from torchmetrics.classification import MulticlassF1Score, MulticlassAccuracy, MulticlassPrecision, MulticlassRecall
 from pathlib import Path
+import numpy as np
 
 # 自作のモジュールをインポート
 from src.model import TwoStreamCNN
-from src.metrics import plot_spike_distribution
 
 class Solver(pl.LightningModule):
     """
@@ -152,15 +152,32 @@ class Solver(pl.LightningModule):
         self.test_preds = torch.cat(self.test_preds_for_report)
         self.test_labels = torch.cat(self.test_labels_for_report)
 
-        # スパイク可視化を実行
-        if hasattr(self, 'class_mapping') and hasattr(self, 'spike_plot_dir'):
-            plot_spike_distribution(
-                all_outputs=self.test_outputs,
-                all_labels=self.test_labels_for_report,
-                all_lengths=self.test_lengths,
-                class_mapping=self.class_mapping,
-                output_dir=self.spike_plot_dir,
-            )
+        # Posteriogramを保存
+        if hasattr(self, 'posteriogram_dir'):
+            output_dir = Path(self.posteriogram_dir)
+            output_dir.mkdir(exist_ok=True, parents=True)
+
+            sample_idx = 0
+            for batch_idx in range(len(self.test_outputs)):
+                probs_batch = self.test_outputs[batch_idx].cpu().numpy()
+                labels_batch = self.test_labels_for_report[batch_idx].cpu().numpy()
+                
+                for i in range(len(labels_batch)):
+                    posteriogram = probs_batch[i] # Shape (T, C+1)
+                    label = labels_batch[i]
+                    
+                    # 保存ファイル名を定義
+                    filename = output_dir / f"sample_{sample_idx}_label_{label}.npz"
+                    
+                    # データをNumpy形式で保存
+                    np.savez_compressed(
+                        filename,
+                        posteriogram=posteriogram,
+                        label=label
+                    )
+                    sample_idx += 1
+
+            print(f"Posteriogramsを {output_dir} に保存しました。")
         
         # 次のfoldのためにリストをクリア
         self.test_outputs.clear()

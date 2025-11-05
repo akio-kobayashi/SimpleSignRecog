@@ -43,54 +43,53 @@ class CausalConv1d(nn.Module):
 
 class HandEncoder(nn.Module):
     """
-    片手の特徴量をエンコードするための1D-CNNエンコーダ。
-    時系列情報を保持したまま出力する。
+    片手の特徴量をエンコードするための残差接続付き1D-CNNエンコーダ。
+    ブロック数は外部から設定可能。
 
     【初学者向け解説】
     入力された手の動きのデータ（時系列）から、畳み込みニューラルネットワーク（CNN）を
     使って、より高度な特徴量を抽出する部分です。
-    以前のバージョンでは、ここで抽出した特徴量を時間方向に平均化（Global Average Pooling）して
-    一つのベクトルにまとめていましたが、今回は時系列情報を失わないように、
-    (Batch, Channels, Time) の形のまま出力します。これにより、どのタイミングで
-    どのような特徴が表れたかを後段の層が判断できるようになります。
+    各畳み込みブロックには「残差接続」が導入されており、学習の安定化を図っています。
+    ブロックの数は設定ファイルから変更可能です。
     """
-    def __init__(self, input_hand_dim: int, channels: int, dropout: float, right_context_size: int):
+    def __init__(self, input_hand_dim: int, channels: int, dropout: float, right_context_size: int, num_blocks: int = 3):
         super().__init__()
         self.input_proj = nn.Linear(input_hand_dim, channels)
         
-        # 畳み込みブロックを因果畳み込み（+右文脈）に置き換え
-        self.conv_blocks = nn.Sequential(
-            CausalConv1d(channels, channels, kernel_size=3, right_context_size=right_context_size),
-            nn.BatchNorm1d(channels),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            CausalConv1d(channels, channels, kernel_size=3, right_context_size=right_context_size),
-            nn.BatchNorm1d(channels),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            CausalConv1d(channels, channels, kernel_size=3, right_context_size=right_context_size),
-            nn.BatchNorm1d(channels),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-        )
+        # 畳み込みブロックをModuleListに格納し、数を可変にする
+        self.blocks = nn.ModuleList()
+        for _ in range(num_blocks):
+            block = nn.Sequential(
+                CausalConv1d(channels, channels, kernel_size=3, right_context_size=right_context_size),
+                nn.BatchNorm1d(channels),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            )
+            self.blocks.append(block)
 
     def forward(self, x: Tensor) -> Tensor:
         # x: (Batch, Time, Features)
         x = self.input_proj(x) # (Batch, Time, Channels)
         x = x.permute(0, 2, 1) # (Batch, Channels, Time) に並べ替え
-        x = self.conv_blocks(x) # (Batch, Channels, Time)
-        # Global Average Poolingを削除し、時系列情報を保持したまま出力
+
+        # --- 残差ブロックをループで適用 ---
+        for block in self.blocks:
+            identity = x
+            out = block(x)
+            x = out + identity # 残差接続
+
         return x
 
 
 class TwoStreamCNN(nn.Module):
     """
-    左右の手の特徴量を別々に処理し、統合する1D-CNNモデル。
+    左右の手の特徴量を別々に処理し、LSTMで統合する1D-CNN + LSTMモデル。
     CTC損失関数に適した形式で、時系列のロジットを出力する。
 
     【初学者向け解説】
     このモデルの本体です。「Two-Stream」という名前の通り、左手と右手、2つの流れ（Stream）の
-    データを別々のエンコーダ（`HandEncoder`）で処理し、最後に統合する構造になっています。
+    データを別々のエンコーダ（`HandEncoder`）で処理し、連結します。
+    その連結された特徴量をLSTM層に入力し、時間的な依存関係を学習します。
     """
     def __init__(
         self,
@@ -98,7 +97,11 @@ class TwoStreamCNN(nn.Module):
         num_classes: int = 20,
         channels: int = 128,
         dropout: float = 0.2,
-        right_context_size: int = 0, # 追加：右文脈のサイズ
+        right_context_size: int = 0, # 畳み込みで考慮する未来のフレーム数
+        # --- CNNとLSTMの構造に関する新しい引数 ---
+        cnn_num_blocks: int = 3,
+        lstm_hidden_dim: int = 256,
+        lstm_layers: int = 1,
     ):
         """
         Args:
@@ -106,7 +109,10 @@ class TwoStreamCNN(nn.Module):
             num_classes (int): 出力クラスの数（CTCのblankトークンを含まない）。
             channels (int): 畳み込み層のチャネル数。
             dropout (float): ドロップアウト率。
-            right_context_size (int): 畳み込みで考慮する未来のフレーム数。0なら完全な因果畳み込み。
+            right_context_size (int): 畳み込みで考慮する未来のフレーム数。
+            cnn_num_blocks (int): HandEncoder内の残差ブロックの数。
+            lstm_hidden_dim (int): LSTM隠れ層の次元数。
+            lstm_layers (int): LSTM層の数。
         """
         super().__init__()
         
@@ -116,25 +122,31 @@ class TwoStreamCNN(nn.Module):
         self.input_hand_dim = input_dim // 2
         
         # 左右の手それぞれにエンコーダを用意 (エンコーダの重みは左右で共有される)
-        self.hand_encoder = HandEncoder(self.input_hand_dim, channels, dropout, right_context_size)
+        self.hand_encoder = HandEncoder(
+            input_hand_dim=self.input_hand_dim, 
+            channels=channels, 
+            dropout=dropout, 
+            right_context_size=right_context_size, 
+            num_blocks=cnn_num_blocks # ブロック数を渡す
+        )
 
-        # 統合後の特徴量からクラスを予測する層
-        # 【初学者向け解説】
-        # CTC損失では、「どのクラスでもない」ことを示す "blank" という特別なラベルを使います。
-        # そのため、実際のクラス数 `num_classes` に1を加えた数を最終的な出力次元とします。
-        self.output_proj = nn.Linear(channels * 2, num_classes + 1)
+        # --- 左右の特徴量を統合するLSTM層 ---
+        self.lstm = nn.LSTM(
+            input_size=channels * 2,  # 左右のチャンネルを連結したものが入力
+            hidden_size=lstm_hidden_dim,
+            num_layers=lstm_layers,
+            batch_first=True, # 入力形式を (Batch, Time, Features) に
+            dropout=dropout if lstm_layers > 1 else 0, # 複数層の場合のみドロップアウト適用
+            bidirectional=False # 因果性を保つため単一方向
+        )
+
+        # --- LSTMの出力からクラスを予測する層 ---
+        self.output_proj = nn.Linear(lstm_hidden_dim, num_classes + 1)
         
 
     def forward(self, x: Tensor, lengths: Tensor) -> Tensor:
         """
         順伝播処理。
-
-        Args:
-            x (Tensor): 入力テンソル。形状: (Batch, Time, Features)
-            lengths (Tensor): 各シーケンスの元の長さ。
-
-        Returns:
-            Tensor: CTC損失用のlog-probabilities。形状: (Time, Batch, num_classes + 1)
         """
         # 1. 入力特徴量を左右の手に分割
         left_features = x[:, :, :self.input_hand_dim]
@@ -147,21 +159,19 @@ class TwoStreamCNN(nn.Module):
         # 3. 左右のエンコード結果をチャンネル次元で連結
         combined_features = torch.cat([encoded_left, encoded_right], dim=1) # (Batch, 2 * Channels, Time)
         
-        # 4. 各タイムステップに対してクラス分類器を適用
-        #    (B, 2*C, T) -> (B, T, 2*C) に変換
+        # 4. LSTMに入力するために次元を並べ替え
+        #    (B, 2*C, T) -> (B, T, 2*C)
         combined_features = combined_features.permute(0, 2, 1)
-        logits = self.output_proj(combined_features) # (Batch, Time, num_classes + 1)
+
+        # 5. LSTM層で時間的依存関係を学習
+        #    LSTMからの出力は (B, T, lstm_hidden_dim)
+        lstm_out, _ = self.lstm(combined_features)
+
+        # 6. 各タイムステップに対してクラス分類器を適用
+        logits = self.output_proj(lstm_out) # (Batch, Time, num_classes + 1)
         
-        # 5. CTC損失のための後処理
-        # 【初学者向け解説】
-        #    `nn.CTCLoss` は、入力として「対数確率（log probability）」を要求します。
-        #    `F.log_softmax` は、モデルの出力（ロジット）を確率に変換し、さらに対数をとる処理を
-        #    効率的かつ数値的に安定して行ってくれます。
+        # 7. CTC損失のための後処理
         log_probs = F.log_softmax(logits, dim=2)
-        
-        # 【初学者向け解説】
-        #    `nn.CTCLoss` の仕様に合わせて、テンソルの次元の順番を
-        #    (Batch, Time, Classes) -> (Time, Batch, Classes) に入れ替えます。
         log_probs = log_probs.permute(1, 0, 2)
         
         return log_probs

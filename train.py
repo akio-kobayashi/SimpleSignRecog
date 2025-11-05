@@ -230,9 +230,9 @@ def main(config: dict, checkpoint_path: str | None = None):
 
         print(f"--- 分割 {fold + 1} のテストを実行します ---")
 
-        # テスト前に、可視化のための情報をSolverに渡す
+        # テスト前に、posteriogram保存のための情報をSolverに渡す
         model.class_mapping = class_mapping
-        model.spike_plot_dir = Path(logger.log_dir) / "spike_visualizations"
+        model.posteriogram_dir = Path(logger.log_dir) / "posteriograms"
 
         # 最良のモデル（val_lossが最小）を使ってテストを実行
         test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')

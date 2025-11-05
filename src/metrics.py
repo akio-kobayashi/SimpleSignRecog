@@ -45,34 +45,74 @@ def plot_spike_distribution(
         if len(class_probs) == 0:
             continue
 
-        # ピークのインデックスを見つける
-        peak_index = torch.argmax(class_probs).item()
+        # 確率を重みとして、時刻の期待値（加重平均）を計算
+        time_indices = torch.arange(length, dtype=torch.float32, device=class_probs.device)
         
-        # 正規化された時間 (0.0 ~ 1.0) を計算
-        normalized_peak_time = peak_index / (length - 1) if length > 1 else 0.5
-        
-        peak_times_by_class[label].append(normalized_peak_time)
+        # 確率の合計で正規化（合計が1になるように）
+        prob_sum = torch.sum(class_probs)
+        if prob_sum > 1e-6: # 確率がほぼゼロの場合は計算をスキップ
+            weighted_probs = class_probs / prob_sum
+            expected_time = torch.sum(time_indices * weighted_probs)
+            
+            # 正規化された時間 (0.0 ~ 1.0) を計算
+            normalized_expected_time = expected_time.item() / (length - 1) if length > 1 else 0.5
+            
+            peak_times_by_class[label].append(normalized_expected_time)
 
-    # クラスごとにヒストグラムをプロット
+    # クラスごとに統計量を計算し、エラーバー付きの点プロットを作成
     output_dir.mkdir(exist_ok=True, parents=True)
-    for class_id, peak_times in peak_times_by_class.items():
+    
+    class_names = []
+    mean_peak_times = []
+    std_peak_times = []
+
+    # 計算対象のクラスをソートして、グラフの順序を固定
+    sorted_class_ids = sorted(peak_times_by_class.keys())
+
+    for class_id in sorted_class_ids:
+        peak_times = peak_times_by_class[class_id]
         if not peak_times:
             continue
+        
+        class_names.append(class_mapping.get(class_id, f"Class_{class_id}") if class_mapping else f"Class_{class_id}")
+        mean_peak_times.append(np.mean(peak_times))
+        std_peak_times.append(np.std(peak_times))
 
-        class_name = class_mapping.get(class_id, f"Class_{class_id}") if class_mapping else f"Class_{class_id}"
-        
-        plt.figure(figsize=(10, 6))
-        plt.hist(peak_times, bins=20, range=(0, 1), alpha=0.7, edgecolor='black')
-        plt.title(f'Spike Peak Distribution for "{class_name}" (n={len(peak_times)})')
-        plt.xlabel("Normalized Time (Start -> End)")
-        plt.ylabel("Frequency")
-        plt.xlim(0, 1)
-        
-        # ファイル名に使えない文字を置換
-        safe_class_name = "".join(c if c.isalnum() else "_" for c in class_name)
-        save_path = output_dir / f"spike_dist_{safe_class_name}.png"
-        
-        plt.savefig(save_path)
-        plt.close()
+    if not class_names:
+        print("ピーク時刻のデータがないため、グラフは生成されませんでした。")
+        return
 
-    print(f"スパイク分布のプロットを {output_dir} に保存しました。")
+    # プロットの作成
+    plt.style.use('ggplot')
+    fig, ax = plt.subplots(figsize=(12, 10))
+    
+    # 横倒しのエラーバープロット
+    ax.errorbar(
+        x=mean_peak_times,
+        y=np.arange(len(class_names)),
+        xerr=std_peak_times,
+        fmt='o', # 点のマーカー
+        capsize=5, # エラーバーのキャップサイズ
+        linestyle='None', # 点の間を線で結ばない
+        markerfacecolor='royalblue',
+        markeredgecolor='navy',
+        ecolor='gray'
+    )
+    
+    ax.set_yticks(np.arange(len(class_names)))
+    ax.set_yticklabels(class_names)
+    ax.invert_yaxis()  # 上からクラス0, 1, 2... となるように
+    
+    ax.set_title('Mean Peak Time of Class Probability by Class', fontsize=16)
+    ax.set_xlabel('Normalized Time (Start -> End)', fontsize=12)
+    ax.set_ylabel('Class', fontsize=12)
+    ax.set_xlim(0, 1)
+    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+    
+    plt.tight_layout()
+    
+    save_path = output_dir / "spike_peak_summary.png"
+    plt.savefig(save_path)
+    plt.close(fig)
+
+    print(f"スパイクピークの統計グラフを {save_path} に保存しました。")
