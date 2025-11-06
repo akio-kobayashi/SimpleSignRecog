@@ -48,6 +48,25 @@ class Solver(pl.LightningModule):
         self.precision = MulticlassPrecision(num_classes=num_classes, average=average_mode)
         self.recall = MulticlassRecall(num_classes=num_classes, average=average_mode)
 
+        # --- デコーダーのセットアップ ---
+        self.decode_method = self.config['trainer'].get('decode_method', 'majority_vote')
+        if self.decode_method == 'beam_search':
+            try:
+                from pyctcdecode import build_ctcdecoder
+            except ImportError:
+                raise ImportError("Beam search decoding requires the 'pyctcdecode' library. Please install it using: pip install pyctcdecode")
+            
+            # ラベルのリストを作成 (blankを含む)
+            # ここでは仮に数字を文字列に変換していますが、実際のクラス名があればそれを使用
+            labels = [str(i) for i in range(num_classes)] + [''] 
+            
+            self.beam_search_decoder = build_ctcdecoder(
+                labels=labels,
+                kenlm_model_path=None, # 言語モデルは使用しない
+                alpha=0.0,
+                beta=0.0
+            )
+
         # テスト結果を保存するためのリスト
         self.test_outputs = []
         self.test_labels_for_report = []
@@ -63,36 +82,55 @@ class Solver(pl.LightningModule):
     def _calculate_metrics(self, log_probs, labels):
         """
         時系列の予測値(log_probs)と正解ラベルから各評価指標を計算する。
-        デコード方式として、Greedy Decode（Best Path Decode）を行い、
-        その結果から最も多く出現した非blankクラスを予測結果とする。
+        configで指定されたデコード方式(Greedy, Majority Vote, or Beam Search)を用いる。
         """
         # log_probs: (T, B, C+1)
         # labels: (B,)
-        
-        # 1. Greedy Decode (Best Path)
-        # 各タイムステップで最も確率の高いクラスインデックスを取得
-        best_path = torch.argmax(log_probs, dim=2) # (T, B)
-        
-        # 2. バッチ内の各サンプルに対して多数決で予測クラスを決定
+        decode_method = self.config['trainer'].get('decode_method', 'majority_vote')
+
         preds = []
-        for i in range(best_path.size(1)): # Batch次元でループ
-            path_for_sample = best_path[:, i]
+        if decode_method == 'beam_search':
+            # --- Beam Search デコード ---
+            probs = torch.exp(log_probs).cpu() # (T, B, C+1)
+            batch_size = probs.size(1)
             
-            # blankトークン (C) を除外
-            non_blank_path = path_for_sample[path_for_sample != self.config['model']['num_classes']]
+            decoded_texts = self.beam_search_decoder.decode_batch(probs)
             
-            if non_blank_path.numel() > 0:
-                # 最も多く出現したクラスを予測結果とする
-                pred = torch.mode(non_blank_path).values
-                preds.append(pred)
-            else:
-                # 非blankの予測が一つもなかった場合
-                # (代替案: 最も確率の高い非blankクラスを選ぶなど)
-                # ここでは暫定的に最初のクラス(0)を予測とする
-                preds.append(torch.tensor(0, device=self.device))
+            for i in range(batch_size):
+                decoded_text = decoded_texts[i]
+                # デコード結果が空、あるいは数字でない場合を考慮
+                if decoded_text and decoded_text.isdigit():
+                    pred = int(decoded_text)
+                    preds.append(torch.tensor(pred, device=self.device))
+                else:
+                    # デコード失敗時は暫定的に0を予測
+                    preds.append(torch.tensor(0, device=self.device))
+
+        else:
+            # --- Greedy or Majority Vote デコード ---
+            best_path = torch.argmax(log_probs, dim=2)  # (T, B)
+            for i in range(best_path.size(1)):  # Batch次元でループ
+                path_for_sample = best_path[:, i]
+
+                if decode_method == 'greedy':
+                    unique_path = torch.unique_consecutive(path_for_sample)
+                    non_blank_path = unique_path[unique_path != self.config['model']['num_classes']]
+                    if non_blank_path.numel() > 0:
+                        preds.append(non_blank_path[0])
+                    else:
+                        preds.append(torch.tensor(0, device=self.device))
+
+                elif decode_method == 'majority_vote':
+                    non_blank_path = path_for_sample[path_for_sample != self.config['model']['num_classes']]
+                    if non_blank_path.numel() > 0:
+                        preds.append(torch.mode(non_blank_path).values)
+                    else:
+                        preds.append(torch.tensor(0, device=self.device))
+                else:
+                    raise ValueError(f"Unsupported decode method: {decode_method}")
 
         preds = torch.stack(preds)
-        
+
         # 各評価指標を計算
         f1 = self.f1(preds, labels)
         acc = self.acc(preds, labels)
