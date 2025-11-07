@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import importlib
 from src.error_rate import calculate_wer # calculate_werをインポート
+from collections import Counter # Counterをインポート
 
 # from src.model import TwoStreamCNN # 動的にインポートするためコメントアウト
 
@@ -118,17 +119,28 @@ class Solver(pl.LightningModule):
                 # 最もスコアの高いビーム (最初のビーム) のテキストを取得
                 decoded_text = beams[0][0] 
 
-                if decoded_text and decoded_text.isdigit():
-                    pred = int(decoded_text)
-                    # --- デバッグ出力の追加 ---
-                    print(f"DEBUG: decoded_text = '{decoded_text}', pred = {pred}, type(pred) = {type(pred)}")
-                    # --- デバッグ出力ここまで ---
-                    preds.append(torch.tensor(pred, device=self.device))
+                # decoded_text は '052' のような文字列になる可能性がある
+                # このタスクでは単一のクラスラベルを期待しているので、
+                # decoded_text から最も頻繁に出現する数字を抽出する
+                
+                # decoded_text が空でないことを確認
+                if decoded_text:
+                    # decoded_text を個々の数字に分解し、intに変換
+                    # 例: '052' -> [0, 5, 2]
+                    decoded_numbers = [int(c) for c in decoded_text if c.isdigit()]
+                    
+                    if decoded_numbers:
+                        # 最も頻繁に出現する数字を予測とする (Majority Voteと同様の考え方)
+                        most_common = Counter(decoded_numbers).most_common(1)
+                        pred = most_common[0][0]
+                    else:
+                        # 数字が見つからない場合はデフォルト値 (0)
+                        pred = 0
                 else:
-                    # --- デバッグ出力の追加 ---
-                    print(f"DEBUG: decoded_text is not digit or empty. decoded_text = '{decoded_text}'")
-                    # --- デバッグ出力ここまで ---
-                    preds.append(torch.tensor(0, device=self.device))
+                    # decoded_text が空の場合はデフォルト値 (0)
+                    pred = 0
+
+                preds.append(torch.tensor(pred, device=self.device))
 
         elif decode_method == 'majority_vote':
             # --- Majority Vote デコード ---
