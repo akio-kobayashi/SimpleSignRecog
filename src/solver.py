@@ -68,8 +68,7 @@ class Solver(pl.LightningModule):
                 labels=labels,
                 kenlm_model_path=None, # 言語モデルは使用しない
                 alpha=0.0,
-                beta=0.0,
-                beam_width=current_beam_width # ここで beam_width を渡す
+                beta=0.0
             )
 
         # テスト結果を保存するためのリスト
@@ -103,10 +102,22 @@ class Solver(pl.LightningModule):
             probs = torch.exp(log_probs).cpu() # (T, B, C+1)
             batch_size = probs.size(1)
             
-            decoded_texts = self.beam_search_decoder.decode_batch(probs)
-            
+            # decode_method に応じて beam_width を設定
+            current_beam_width = self.config['trainer'].get('beam_width', 10) if decode_method == 'beam_search' else 1
+
+            # pyctcdecode の decode_beams を使用してデコード
+            # decode_beams は (text, score) のタプルのリストを返す
+            # 各サンプルに対してビームサーチを実行
             for i in range(batch_size):
-                decoded_text = decoded_texts[i]
+                # 各サンプルの確率時系列 (T, C+1)
+                sample_probs = probs[:, i, :].numpy() 
+                
+                # decode_beams に beam_width を渡す
+                beams = self.beam_search_decoder.decode_beams(sample_probs, beam_width=current_beam_width)
+                
+                # 最もスコアの高いビーム (最初のビーム) のテキストを取得
+                decoded_text = beams[0][0] 
+
                 if decoded_text and decoded_text.isdigit():
                     pred = int(decoded_text)
                     preds.append(torch.tensor(pred, device=self.device))
