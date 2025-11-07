@@ -407,12 +407,12 @@ if __name__ == "__main__":
 
         # 詳細なWER結果をCSVに保存
         wer_csv_path = output_dir / "cross_validation_wer_detailed.csv"
-        full_wer_df.to_csv(wer_csv_path, index=False, float_format=%.4f)
+        full_wer_df.to_csv(wer_csv_path, index=False, float_format='%.4f')
         print(f"詳細なWER結果を保存しました: {wer_csv_path}")
 
         # 各foldの平均WERをCSVに保存
         mean_wer_csv_path = output_dir / "cross_validation_wer_summary_per_fold.csv"
-        mean_wer_per_fold.to_csv(mean_wer_csv_path, index=False, float_format=%.4f)
+        mean_wer_per_fold.to_csv(mean_wer_csv_path, index=False, float_format='%.4f')
         print(f"各foldの平均WERを保存しました: {mean_wer_csv_path}")
     else:
         print("\n--- WER (Word Error Rate) 結果 ---")
