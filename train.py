@@ -227,9 +227,10 @@ def main(config: dict, checkpoint_path: str | None = None):
         # PyTorch LightningのTrainerを初期化
         # Trainerに渡す設定と、Solver/他のロジックで使う設定を分離
         trainer_config = config["trainer"].copy()
-        trainer_config.pop("metrics_average_mode", None)  # Solver用なのでTrainerからは削除
-        trainer_config.pop("xgboost_params", None)       # XGBoost用なのでTrainerからは削除
-        trainer_config.pop("decode_method", None)        # decode_methodもTrainerからは削除
+        trainer_config.pop("metrics_average_mode", None)
+        trainer_config.pop("xgboost_params", None)
+        trainer_config.pop("decode_method", None)
+        trainer_config.pop("beam_width", None) # beam_widthもTrainerからは削除
 
         trainer = pl.Trainer(
             callbacks=[checkpoint_callback], # コールバック（チェックポイント保存など）を設定
