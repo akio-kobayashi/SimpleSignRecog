@@ -6,6 +6,7 @@ from torchmetrics.classification import MulticlassF1Score, MulticlassAccuracy, M
 from pathlib import Path
 import numpy as np
 import importlib
+from src.error_rate import calculate_wer # calculate_werをインポート
 
 # from src.model import TwoStreamCNN # 動的にインポートするためコメントアウト
 
@@ -72,6 +73,7 @@ class Solver(pl.LightningModule):
         self.test_labels_for_report = []
         self.test_preds_for_report = []
         self.test_lengths = []
+        self.all_wer_results = [] # WERの結果を保存するためのリスト
 
     def forward(self, x, lengths):
         """
@@ -209,6 +211,22 @@ class Solver(pl.LightningModule):
         self.test_lengths.append(lengths.cpu()) # 正規化に使う元の系列長
         self.test_preds_for_report.append(preds.cpu())
         self.test_labels_for_report.append(labels.cpu())
+
+        # WERの計算と保存
+        if self.decode_method in ['greedy', 'beam_search']:
+            for i in range(batch_size):
+                ref_label = [labels[i].item()] # 参照は単一のクラスラベル
+                hyp_pred = [preds[i].item()]   # 予測も単一のクラスラベル
+                
+                # calculate_werはリストを受け取る
+                sub, dele, ins, num_w, wer = calculate_wer(ref_label, hyp_pred)
+                self.all_wer_results.append({
+                    'substitutions': sub,
+                    'deletions': dele,
+                    'insertions': ins,
+                    'num_words': num_w,
+                    'wer': wer
+                })
         
         return loss
 
@@ -219,6 +237,14 @@ class Solver(pl.LightningModule):
         # classification_reportのために結果を結合 (train.pyで使われる)
         self.test_preds = torch.cat(self.test_preds_for_report)
         self.test_labels = torch.cat(self.test_labels_for_report)
+
+        # WERの結果を結合 (train.pyで使われる)
+        if self.all_wer_results:
+            import pandas as pd
+            self.wer_results = pd.DataFrame(self.all_wer_results)
+        else:
+            import pandas as pd
+            self.wer_results = pd.DataFrame() # 結果がない場合は空のDataFrame
 
         # Posteriogramを保存
         if hasattr(self, 'posteriogram_dir'):
@@ -252,6 +278,7 @@ class Solver(pl.LightningModule):
         self.test_lengths.clear()
         self.test_preds_for_report.clear()
         self.test_labels_for_report.clear()
+        self.all_wer_results.clear() # WERの結果もクリア
 
     def configure_optimizers(self):
         """

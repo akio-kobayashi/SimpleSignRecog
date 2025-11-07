@@ -123,6 +123,7 @@ def main(config: dict, checkpoint_path: str | None = None):
         cv_iterator = cv_splitter.split(metadata_df)
 
     all_fold_metrics = []
+    all_fold_wer_results = [] # WERの結果を格納するリスト
     # CV戦略に応じて結果を格納するコンテナを初期化
     if not is_loocv:
         all_fold_reports = []  # k-fold用
@@ -228,6 +229,7 @@ def main(config: dict, checkpoint_path: str | None = None):
         trainer_config = config["trainer"].copy()
         trainer_config.pop("metrics_average_mode", None)  # Solver用なのでTrainerからは削除
         trainer_config.pop("xgboost_params", None)       # XGBoost用なのでTrainerからは削除
+        trainer_config.pop("decode_method", None)        # decode_methodもTrainerからは削除
 
         trainer = pl.Trainer(
             callbacks=[checkpoint_callback], # コールバック（チェックポイント保存など）を設定
@@ -249,6 +251,12 @@ def main(config: dict, checkpoint_path: str | None = None):
         # 最良のモデル（val_lossが最小）を使ってテストを実行
         test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')
         all_fold_metrics.append(test_results[0])
+
+        # WERの結果を収集
+        if hasattr(model, 'wer_results') and not model.wer_results.empty:
+            # fold番号を追加
+            model.wer_results['fold'] = fold + 1
+            all_fold_wer_results.append(model.wer_results)
 
         # --- 2e. CV戦略に基づいた結果の収集 ---
         y_true = model.test_labels.cpu().numpy() # 正解ラベル
@@ -367,3 +375,46 @@ if __name__ == "__main__":
 
     # メイン関数を実行
     main(config, checkpoint_path=args.checkpoint)
+
+
+    # WERの結果を集計し、CSVに保存
+    if all_fold_wer_results:
+        full_wer_df = pd.concat(all_fold_wer_results, ignore_index=True)
+        
+        # 各foldの平均WERを計算
+        mean_wer_per_fold = full_wer_df.groupby(fold)[wer].mean().reset_index()
+        mean_wer_per_fold.rename(columns={wer: mean_wer_per_sample}, inplace=True)
+        
+        # 全体の平均WERを計算
+        overall_mean_wer = full_wer_df[wer].mean()
+        
+        # 全体の合計エラー数と単語数を計算
+        total_sub = full_wer_df[substitutions].sum()
+        total_del = full_wer_df[deletions].sum()
+        total_ins = full_wer_df[insertions].sum()
+        total_words = full_wer_df[num_words].sum()
+        
+        # 全体でのWERを再計算 (各サンプルのWERの平均ではなく、総エラー数/総単語数)
+        overall_wer_from_totals = (total_sub + total_del + total_ins) / total_words if total_words > 0 else 0.0
+
+        print(f"\n--- WER (Word Error Rate) 結果 ---")
+        print(f"各サンプルの平均WER (全fold): {overall_mean_wer:.4f}")
+        print(f"総エラー数に基づくWER (全fold): {overall_wer_from_totals:.4f}")
+        print(f"  置換 (Substitutions): {total_sub}")
+        print(f"  削除 (Deletions): {total_del}")
+        print(f"  挿入 (Insertions): {total_ins}")
+        print(f"  総単語数 (Total Words): {total_words}")
+
+        # 詳細なWER結果をCSVに保存
+        wer_csv_path = output_dir / "cross_validation_wer_detailed.csv"
+        full_wer_df.to_csv(wer_csv_path, index=False, float_format=%.4f)
+        print(f"詳細なWER結果を保存しました: {wer_csv_path}")
+
+        # 各foldの平均WERをCSVに保存
+        mean_wer_csv_path = output_dir / "cross_validation_wer_summary_per_fold.csv"
+        mean_wer_per_fold.to_csv(mean_wer_csv_path, index=False, float_format=%.4f)
+        print(f"各foldの平均WERを保存しました: {mean_wer_csv_path}")
+    else:
+        print("\n--- WER (Word Error Rate) 結果 ---")
+        print("WERの結果は収集されませんでした (decode_methodがgreedyまたはbeam_searchではありません)。")
+
