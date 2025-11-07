@@ -51,7 +51,7 @@ class Solver(pl.LightningModule):
 
         # --- デコーダーのセットアップ ---
         self.decode_method = self.config['trainer'].get('decode_method', 'majority_vote')
-        if self.decode_method == 'beam_search':
+        if self.decode_method in ['beam_search', 'greedy']:
             try:
                 from pyctcdecode import build_ctcdecoder
             except ImportError:
@@ -61,11 +61,15 @@ class Solver(pl.LightningModule):
             # ここでは仮に数字を文字列に変換していますが、実際のクラス名があればそれを使用
             labels = [str(i) for i in range(num_classes)] + [''] 
             
+            # decode_method に応じて beam_width を設定
+            current_beam_width = self.config['trainer'].get('beam_width', 10) if self.decode_method == 'beam_search' else 1
+
             self.beam_search_decoder = build_ctcdecoder(
                 labels=labels,
                 kenlm_model_path=None, # 言語モデルは使用しない
                 alpha=0.0,
-                beta=0.0
+                beta=0.0,
+                beam_width=current_beam_width # ここで beam_width を渡す
             )
 
         # テスト結果を保存するためのリスト
@@ -91,8 +95,11 @@ class Solver(pl.LightningModule):
         decode_method = self.config['trainer'].get('decode_method', 'majority_vote')
 
         preds = []
-        if decode_method == 'beam_search':
-            # --- Beam Search デコード ---
+        # pyctcdecode を使用するデコード (beam_search または greedy)
+        if decode_method in ['beam_search', 'greedy']:
+            if not hasattr(self, 'beam_search_decoder'):
+                raise RuntimeError("pyctcdecode beam_search_decoder not initialized.")
+
             probs = torch.exp(log_probs).cpu() # (T, B, C+1)
             batch_size = probs.size(1)
             
@@ -100,36 +107,25 @@ class Solver(pl.LightningModule):
             
             for i in range(batch_size):
                 decoded_text = decoded_texts[i]
-                # デコード結果が空、あるいは数字でない場合を考慮
                 if decoded_text and decoded_text.isdigit():
                     pred = int(decoded_text)
                     preds.append(torch.tensor(pred, device=self.device))
                 else:
-                    # デコード失敗時は暫定的に0を予測
                     preds.append(torch.tensor(0, device=self.device))
 
-        else:
-            # --- Greedy or Majority Vote デコード ---
+        elif decode_method == 'majority_vote':
+            # --- Majority Vote デコード ---
             best_path = torch.argmax(log_probs, dim=2)  # (T, B)
             for i in range(best_path.size(1)):  # Batch次元でループ
                 path_for_sample = best_path[:, i]
 
-                if decode_method == 'greedy':
-                    unique_path = torch.unique_consecutive(path_for_sample)
-                    non_blank_path = unique_path[unique_path != self.config['model']['num_classes']]
-                    if non_blank_path.numel() > 0:
-                        preds.append(non_blank_path[0])
-                    else:
-                        preds.append(torch.tensor(0, device=self.device))
-
-                elif decode_method == 'majority_vote':
-                    non_blank_path = path_for_sample[path_for_sample != self.config['model']['num_classes']]
-                    if non_blank_path.numel() > 0:
-                        preds.append(torch.mode(non_blank_path).values)
-                    else:
-                        preds.append(torch.tensor(0, device=self.device))
+                non_blank_path = path_for_sample[path_for_sample != self.config['model']['num_classes']]
+                if non_blank_path.numel() > 0:
+                    preds.append(torch.mode(non_blank_path).values)
                 else:
-                    raise ValueError(f"Unsupported decode method: {decode_method}")
+                    preds.append(torch.tensor(0, device=self.device))
+        else:
+            raise ValueError(f"Unsupported decode method: {decode_method}")
 
         preds = torch.stack(preds)
 
