@@ -120,8 +120,14 @@ class Solver(pl.LightningModule):
 
                 if decoded_text and decoded_text.isdigit():
                     pred = int(decoded_text)
+                    # --- デバッグ出力の追加 ---
+                    print(f"DEBUG: decoded_text = '{decoded_text}', pred = {pred}, type(pred) = {type(pred)}")
+                    # --- デバッグ出力ここまで ---
                     preds.append(torch.tensor(pred, device=self.device))
                 else:
+                    # --- デバッグ出力の追加 ---
+                    print(f"DEBUG: decoded_text is not digit or empty. decoded_text = '{decoded_text}'")
+                    # --- デバッグ出力ここまで ---
                     preds.append(torch.tensor(0, device=self.device))
 
         elif decode_method == 'majority_vote':
