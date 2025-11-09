@@ -359,6 +359,47 @@ def main(config: dict, checkpoint_path: str | None = None):
 
     print("\n各分割の個別のメトリクスとチェックポイントは、それぞれの 'fold_X' ディレクトリに記録されています。")
 
+    # WERの結果を集計し、CSVに保存
+    if all_fold_wer_results:
+        full_wer_df = pd.concat(all_fold_wer_results, ignore_index=True)
+        
+        # 各foldの平均WERを計算
+        mean_wer_per_fold = full_wer_df.groupby('fold')['wer'].mean().reset_index()
+        mean_wer_per_fold.rename(columns={'wer': 'mean_wer_per_sample'}, inplace=True)
+        
+        # 全体の平均WERを計算
+        overall_mean_wer = full_wer_df['wer'].mean()
+        
+        # 全体の合計エラー数と単語数を計算
+        total_sub = full_wer_df['substitutions'].sum()
+        total_del = full_wer_df['deletions'].sum()
+        total_ins = full_wer_df['insertions'].sum()
+        total_words = full_wer_df['num_words'].sum()
+        
+        # 全体でのWERを再計算 (各サンプルのWERの平均ではなく、総エラー数/総単語数)
+        overall_wer_from_totals = (total_sub + total_del + total_ins) / total_words if total_words > 0 else 0.0
+
+        print(f"\n--- WER (Word Error Rate) 結果 ---")
+        print(f"各サンプルの平均WER (全fold): {overall_mean_wer:.4f}")
+        print(f"総エラー数に基づくWER (全fold): {overall_wer_from_totals:.4f}")
+        print(f"  置換 (Substitutions): {int(total_sub)}")
+        print(f"  削除 (Deletions): {int(total_del)}")
+        print(f"  挿入 (Insertions): {int(total_ins)}")
+        print(f"  総単語数 (Total Words): {int(total_words)}")
+
+        # 詳細なWER結果をCSVに保存
+        wer_csv_path = output_dir / "cross_validation_wer_detailed.csv"
+        full_wer_df.to_csv(wer_csv_path, index=False, float_format='%.4f')
+        print(f"詳細なWER結果を保存しました: {wer_csv_path}")
+
+        # 各foldの平均WERをCSVに保存
+        mean_wer_csv_path = output_dir / "cross_validation_wer_summary_per_fold.csv"
+        mean_wer_per_fold.to_csv(mean_wer_csv_path, index=False, float_format='%.4f')
+        print(f"各foldの平均WERを保存しました: {mean_wer_csv_path}")
+    else:
+        print("\n--- WER (Word Error Rate) 結果 ---")
+        print("WERの結果は収集されませんでした (decode_methodがgreedyまたはbeam_searchではありません)。")
+
 
 # このスクリプトが直接実行された場合にのみ以下のコードが実行されます
 if __name__ == "__main__":
@@ -376,46 +417,4 @@ if __name__ == "__main__":
 
     # メイン関数を実行
     main(config, checkpoint_path=args.checkpoint)
-
-
-    # WERの結果を集計し、CSVに保存
-    if all_fold_wer_results:
-        full_wer_df = pd.concat(all_fold_wer_results, ignore_index=True)
-        
-        # 各foldの平均WERを計算
-        mean_wer_per_fold = full_wer_df.groupby(fold)[wer].mean().reset_index()
-        mean_wer_per_fold.rename(columns={wer: mean_wer_per_sample}, inplace=True)
-        
-        # 全体の平均WERを計算
-        overall_mean_wer = full_wer_df[wer].mean()
-        
-        # 全体の合計エラー数と単語数を計算
-        total_sub = full_wer_df[substitutions].sum()
-        total_del = full_wer_df[deletions].sum()
-        total_ins = full_wer_df[insertions].sum()
-        total_words = full_wer_df[num_words].sum()
-        
-        # 全体でのWERを再計算 (各サンプルのWERの平均ではなく、総エラー数/総単語数)
-        overall_wer_from_totals = (total_sub + total_del + total_ins) / total_words if total_words > 0 else 0.0
-
-        print(f"\n--- WER (Word Error Rate) 結果 ---")
-        print(f"各サンプルの平均WER (全fold): {overall_mean_wer:.4f}")
-        print(f"総エラー数に基づくWER (全fold): {overall_wer_from_totals:.4f}")
-        print(f"  置換 (Substitutions): {total_sub}")
-        print(f"  削除 (Deletions): {total_del}")
-        print(f"  挿入 (Insertions): {total_ins}")
-        print(f"  総単語数 (Total Words): {total_words}")
-
-        # 詳細なWER結果をCSVに保存
-        wer_csv_path = output_dir / "cross_validation_wer_detailed.csv"
-        full_wer_df.to_csv(wer_csv_path, index=False, float_format='%.4f')
-        print(f"詳細なWER結果を保存しました: {wer_csv_path}")
-
-        # 各foldの平均WERをCSVに保存
-        mean_wer_csv_path = output_dir / "cross_validation_wer_summary_per_fold.csv"
-        mean_wer_per_fold.to_csv(mean_wer_csv_path, index=False, float_format='%.4f')
-        print(f"各foldの平均WERを保存しました: {mean_wer_csv_path}")
-    else:
-        print("\n--- WER (Word Error Rate) 結果 ---")
-        print("WERの結果は収集されませんでした (decode_methodがgreedyまたはbeam_searchではありません)。")
 
