@@ -109,36 +109,62 @@ class STGCNModel(nn.Module):
     """
     ST-GCNモデル本体。
     solver.pyとのインターフェースを保ち、既存モデルと切り替え可能にする。
+    特徴量エンジニアリングの設定に応じて、動的に入力形式を処理するように変更。
     """
     def __init__(
         self,
-        input_dim: int = 386,
+        input_dim: int,
         num_classes: int = 20,
         channels: int = 64,
         dropout: float = 0.2,
         num_blocks: int = 3,
         temporal_kernel_size: int = 9,
-        **kwargs # model.pyの他の引数を無視するため
+        features_config: dict = None, # 特徴量設定を受け取る
+        **kwargs
     ):
         super().__init__()
         
-        if input_dim != 386:
-            raise ValueError("STGCNModel requires input_dim to be 386.")
-        
+        if features_config is None:
+            raise ValueError("STGCNModel requires 'features_config' to be provided.")
+
+        self.features_config = features_config
         self.num_joints = 21
-        self.in_channels = 9 # pos(3) + vel(3) + acc(3)
         
-        # --- グラフ隣接行列の準備 ---
+        # --- configに基づいて、ノード毎の入力チャンネル数(C)を決定 ---
+        self.in_channels = 0
+        paper_conf = self.features_config.get('paper_features', {})
+        normalize_mode = self.features_config.get('normalize_mode', 'normalize_landmarks')
+        
+        # `train.py`の`get_feature_dim`ロジックと整合性をとる
+        use_paper_speed = paper_conf.get('speed', False)
+        use_paper_anthropometric = paper_conf.get('anthropometric', False)
+        is_paper_mode = normalize_mode in ['current_wrist', 'first_wrist'] or use_paper_speed or use_paper_anthropometric
+
+        # 座標(position)は常に特徴量に含まれる
+        self.in_channels += 3 
+
+        if not is_paper_mode:
+            # 既存のパイプラインは速度と加速度を含む
+            self.in_channels += 3  # velocity
+            self.in_channels += 3  # acceleration
+        elif paper_conf.get('speed'):
+            # 論文ベースのパイプラインは、speedフラグがtrueの場合に速度を含む
+            self.in_channels += 3  # speed (velocity)
+
+        # --- グラフ隣接行列の準備 (バグ修正済み) ---
         A = torch.zeros((self.num_joints, self.num_joints), dtype=torch.float32)
         for i, j in HAND_BONES:
             A[i, j] = 1
             A[j, i] = 1
         
         # 正規化: D^(-1/2) * A * D^(-1/2)
-        D = torch.diag(torch.sum(A, axis=1))
-        D_inv_sqrt = torch.pow(torch.diag(D), -0.5)
-        D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.
-        A_norm = D_inv_sqrt @ A @ D_inv_sqrt
+        # 元の実装では D_inv_sqrt がベクトルであり、行列積の結果がスカラーになっていたため修正。
+        # D_inv_sqrt を対角行列に変換してから行列積を行うことで、正しく正規化された隣接行列を計算する。
+        degrees = torch.sum(A, axis=1)
+        D_inv_sqrt_vec = torch.pow(degrees, -0.5)
+        D_inv_sqrt_vec[torch.isinf(D_inv_sqrt_vec)] = 0.
+        D_inv_sqrt_mat = torch.diag(D_inv_sqrt_vec)
+        A_norm = D_inv_sqrt_mat @ A @ D_inv_sqrt_mat
         self.register_buffer('A', A_norm)
 
         # --- モデルの構築 ---
@@ -153,33 +179,74 @@ class STGCNModel(nn.Module):
             current_channels = channels
 
         # --- 出力層 ---
-        # ST-GCNの出力をCTC損失が要求する形式に変換する
-        self.output_proj = nn.Linear(channels * self.num_joints * 2, num_classes + 1) # 左右の手の特徴を結合
+        self.output_proj = nn.Linear(channels * self.num_joints * 2, num_classes + 1)
         self.dropout = nn.Dropout(dropout)
 
     def _unpack_features(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """
-        386次元のフラットな特徴量ベクトルを、左右の手の
-        (Batch, Time, Joints, Channels) 形式のテンソルに分解・再構成する。
+        フラットな特徴量ベクトルを、左右の手の (B, T, V, C) 形式のテンソルに分解・再構成する。
+        特徴量設定に応じて、どの特徴量を抽出するかが変わる。
+        ST-GCNはノード(関節)ベースのモデルのため、関節ペア間の距離などのエッジ特徴量は無視する。
         """
         B, T, _ = x.shape
         
-        # 左右の特徴量に分割 (各193次元)
-        left_flat = x[:, :, :193]
-        right_flat = x[:, :, 193:]
-        
-        hands_features = []
-        for hand_flat in [left_flat, right_flat]:
-            # pos(63), vel(63), acc(63) を抽出
-            pos = hand_flat[:, :, :63].reshape(B, T, self.num_joints, 3)
-            vel = hand_flat[:, :, 63:126].reshape(B, T, self.num_joints, 3)
-            acc = hand_flat[:, :, 126:189].reshape(B, T, self.num_joints, 3)
+        paper_conf = self.features_config.get('paper_features', {})
+        normalize_mode = self.features_config.get('normalize_mode', 'normalize_landmarks')
+
+        # `train.py`の`get_feature_dim`ロジックと整合性をとる
+        use_paper_speed = paper_conf.get('speed', False)
+        use_paper_anthropometric = paper_conf.get('anthropometric', False)
+        is_paper_mode = normalize_mode in ['current_wrist', 'first_wrist'] or use_paper_speed or use_paper_anthropometric
+
+        if not is_paper_mode:
+            # --- 既存のパイプライン (386次元) の場合 ---
+            # 特徴量の内訳: [左手(pos,vel,acc,geo), 右手(pos,vel,acc,geo)]
+            # ST-GCNでは pos, vel, acc のみ使用する (geoはエッジ特徴量のため無視)
+            left_flat = x[:, :, :193]
+            right_flat = x[:, :, 193:386]
+
+            hands_features = []
+            for hand_flat in [left_flat, right_flat]:
+                pos = hand_flat[:, :, :63].reshape(B, T, self.num_joints, 3)
+                vel = hand_flat[:, :, 63:126].reshape(B, T, self.num_joints, 3)
+                acc = hand_flat[:, :, 126:189].reshape(B, T, self.num_joints, 3)
+                hand_features = torch.cat([pos, vel, acc], dim=3)
+                hands_features.append(hand_features)
+            return hands_features[0], hands_features[1]
+        else:
+            # --- 論文ベースのパイプラインの場合 ---
+            # 特徴量の内訳: [座標(126), 速度(126, optional), 人体測定(420, optional)]
+            # 座標と速度は左右(63+63)に分割されている。
+            current_offset = 0
             
-            # (B, T, V, C) 形式で結合 (C=9)
-            hand_features = torch.cat([pos, vel, acc], dim=3)
-            hands_features.append(hand_features)
+            # 1. 座標 (常に存在する)
+            pos_dim = self.num_joints * 3 * 2
+            pos_feats = x[:, :, current_offset : current_offset + pos_dim]
+            current_offset += pos_dim
             
-        return hands_features[0], hands_features[1]
+            left_pos = pos_feats[:, :, :pos_dim//2].reshape(B, T, self.num_joints, 3)
+            right_pos = pos_feats[:, :, pos_dim//2:].reshape(B, T, self.num_joints, 3)
+            
+            left_tensors = [left_pos]
+            right_tensors = [right_pos]
+
+            # 2. 速度 (オプション)
+            if paper_conf.get('speed'):
+                vel_dim = self.num_joints * 3 * 2
+                vel_feats = x[:, :, current_offset : current_offset + vel_dim]
+                current_offset += vel_dim
+                
+                left_vel = vel_feats[:, :, :vel_dim//2].reshape(B, T, self.num_joints, 3)
+                right_vel = vel_feats[:, :, vel_dim//2:].reshape(B, T, self.num_joints, 3)
+                left_tensors.append(left_vel)
+                right_tensors.append(right_vel)
+
+            # 人体測定特徴量(anthropometric)はエッジ特徴量のため、このモデルでは無視する
+            
+            left_hand_features = torch.cat(left_tensors, dim=3)
+            right_hand_features = torch.cat(right_tensors, dim=3)
+            
+            return left_hand_features, right_hand_features
 
     def forward(self, x: Tensor, lengths: Tensor) -> Tensor:
         """
@@ -188,32 +255,28 @@ class STGCNModel(nn.Module):
         B, T, _ = x.shape
         
         # 1. 入力特徴量を分解・再構成
-        left_hand, right_hand = self._unpack_features(x) # (B, T, V, C_in=9)
+        left_hand, right_hand = self._unpack_features(x)
         
         # 2. 左右の手をそれぞれST-GCNブロックで処理 (重みは共有)
-        # 入力プロジェクション
         left_out = self.input_proj(left_hand)
         right_out = self.input_proj(right_hand)
         
-        # ST-GCNブロック
         for block in self.st_gcn_blocks:
             left_out = block(left_out, self.A)
             right_out = block(right_out, self.A)
             
         # 3. 左右の特徴量を結合
-        # (B, T, V, C_out) -> (B, T, V * C_out)
         left_out = left_out.reshape(B, T, -1)
         right_out = right_out.reshape(B, T, -1)
         
-        # (B, T, 2 * V * C_out)
         combined = torch.cat([left_out, right_out], dim=2)
         combined = self.dropout(combined)
         
         # 4. 各タイムステップに対してクラス分類器を適用
-        logits = self.output_proj(combined) # (B, T, num_classes + 1)
+        logits = self.output_proj(combined)
         
         # 5. CTC損失のための後処理
         log_probs = F.log_softmax(logits, dim=2)
-        log_probs = log_probs.permute(1, 0, 2) # (T, B, num_classes + 1)
+        log_probs = log_probs.permute(1, 0, 2)
         
         return log_probs

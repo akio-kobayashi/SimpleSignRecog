@@ -29,6 +29,10 @@ class Solver(pl.LightningModule):
         model_params = self.config['model'].copy()
         module_path = model_params.pop('module_path')
         class_name = model_params.pop('class_name')
+
+        # STGCNモデルの場合、特徴量エンジニアリングの設定を渡す
+        if class_name == 'STGCNModel':
+            model_params['features_config'] = self.config.get('features', {})
         
         try:
             module = importlib.import_module(module_path)
