@@ -84,12 +84,7 @@ class HandEncoder(nn.Module):
 class TwoStreamCNN(nn.Module):
     """
     左右の手の特徴量を別々に処理し、LSTMで統合する1D-CNN + LSTMモデル。
-    CTC損失関数に適した形式で、時系列のロジットを出力する。
-
-    【初学者向け解説】
-    このモデルの本体です。「Two-Stream」という名前の通り、左手と右手、2つの流れ（Stream）の
-    データを別々のエンコーダ（`HandEncoder`）で処理し、連結します。
-    その連結された特徴量をLSTM層に入力し、時間的な依存関係を学習します。
+    学習安定化のため、主損失(CTC)と補助損失(CrossEntropy)を併用する。
     """
     def __init__(
         self,
@@ -140,14 +135,21 @@ class TwoStreamCNN(nn.Module):
             bidirectional=False # 因果性を保つため単一方向
         )
 
-        # --- LSTMの出力からクラスを予測する層 ---
-        self.output_proj = nn.Linear(lstm_hidden_dim, num_classes + 1)
+        # --- 2つの出力ヘッドを定義 ---
+        # 主損失(CTC)用の出力層
+        self.ctc_output_proj = nn.Linear(lstm_hidden_dim, num_classes + 1)
+        # 補助損失(CE)用の出力層
+        self.aux_output_proj = nn.Linear(lstm_hidden_dim, num_classes)
+        self.dropout = nn.Dropout(dropout)
         
 
-    def forward(self, x: Tensor, lengths: Tensor) -> Tensor:
+    def forward(self, x: Tensor, lengths: Tensor) -> tuple[Tensor, Tensor]:
         """
         順伝播処理。
+        CTC損失用の時間毎の出力と、補助損失用の最終ステップ出力のタプルを返す。
         """
+        B, T, _ = x.shape
+        
         # 1. 入力特徴量を左右の手に分割
         left_features = x[:, :, :self.input_hand_dim]
         right_features = x[:, :, self.input_hand_dim:]
@@ -166,12 +168,19 @@ class TwoStreamCNN(nn.Module):
         # 5. LSTM層で時間的依存関係を学習
         #    LSTMからの出力は (B, T, lstm_hidden_dim)
         lstm_out, _ = self.lstm(combined_features)
+        lstm_out_dropped = self.dropout(lstm_out)
 
-        # 6. 各タイムステップに対してクラス分類器を適用
-        logits = self.output_proj(lstm_out) # (Batch, Time, num_classes + 1)
+        # 6. 主出力 (CTC損失用)
+        ctc_logits = self.ctc_output_proj(lstm_out_dropped)
+        ctc_log_probs = F.log_softmax(ctc_logits, dim=2).permute(1, 0, 2)
+
+        # 7. 補助出力 (CrossEntropy損失用)
+        # 各サンプルの実際のシーケンス長に基づいて、LSTMの最後の有効な出力を取得
+        row_indices = torch.arange(B, device=x.device)
+        last_step_indices = lengths.long() - 1
+        last_output = lstm_out[row_indices, last_step_indices, :]
+        last_output_dropped = self.dropout(last_output)
         
-        # 7. CTC損失のための後処理
-        log_probs = F.log_softmax(logits, dim=2)
-        log_probs = log_probs.permute(1, 0, 2)
+        aux_logits = self.aux_output_proj(last_output_dropped)
         
-        return log_probs
+        return ctc_log_probs, aux_logits
