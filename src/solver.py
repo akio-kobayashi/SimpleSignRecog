@@ -40,7 +40,14 @@ class Solver(pl.LightningModule):
         except (ImportError, AttributeError) as e:
             raise type(e)(f"Failed to import model '{class_name}' from '{module_path}': {e}")
             
-        self.model = model_class(**model_params)
+        # --- モデルの__init__が受け入れる引数のみを渡すようにフィルタリング ---
+        import inspect
+        sig = inspect.signature(model_class.__init__)
+        allowed_args = {p.name for p in sig.parameters.values()}
+        
+        filtered_model_params = {k: v for k, v in model_params.items() if k in allowed_args}
+        
+        self.model = model_class(**filtered_model_params)
 
         # --- 損失関数の定義 ---
         num_classes = self.config['model']['num_classes']
