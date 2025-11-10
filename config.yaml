@@ -65,6 +65,7 @@ trainer:
   metrics_average_mode: "macro" # "macro" or "weighted"
   decode_method: "majority_vote" # "majority_vote" or "greedy" or "beam_search"
   beam_width: 10 # beam searchの幅
+  loss_lambda: 0.8 # CTC損失の重み (total_loss = lambda * ctc_loss + (1 - lambda) * ce_loss)
   max_epochs: 50
   accelerator: auto
   log_every_n_steps: 1
