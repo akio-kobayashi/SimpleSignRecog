@@ -131,7 +131,7 @@ class Solver(pl.LightningModule):
         return loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels
 
     def training_step(self, batch, batch_idx):
-        loss, loss_ctc, loss_ce, _, _ = self._shared_step(batch)
+        loss, loss_ctc, loss_ce, _, _, _ = self._shared_step(batch)
         self.log('train/loss', loss, on_step=True, on_epoch=True)
         self.log('train/loss_ctc', loss_ctc, on_step=True, on_epoch=True)
         if isinstance(self.model, STGCNModel):
