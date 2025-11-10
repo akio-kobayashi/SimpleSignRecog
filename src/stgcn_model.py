@@ -120,6 +120,8 @@ class STGCNModel(nn.Module):
         num_blocks: int = 3,
         temporal_kernel_size: int = 9,
         features_config: dict = None, # 特徴量設定を受け取る
+        lstm_hidden_dim: int = 256, # LSTM層のパラメータを追加
+        lstm_layers: int = 1,       # LSTM層のパラメータを追加
         **kwargs
     ):
         super().__init__()
@@ -158,8 +160,6 @@ class STGCNModel(nn.Module):
             A[j, i] = 1
         
         # 正規化: D^(-1/2) * A * D^(-1/2)
-        # 元の実装では D_inv_sqrt がベクトルであり、行列積の結果がスカラーになっていたため修正。
-        # D_inv_sqrt を対角行列に変換してから行列積を行うことで、正しく正規化された隣接行列を計算する。
         degrees = torch.sum(A, axis=1)
         D_inv_sqrt_vec = torch.pow(degrees, -0.5)
         D_inv_sqrt_vec[torch.isinf(D_inv_sqrt_vec)] = 0.
@@ -178,8 +178,17 @@ class STGCNModel(nn.Module):
             )
             current_channels = channels
 
+        # --- LSTM層の追加 ---
+        self.lstm = nn.LSTM(
+            input_size=channels * self.num_joints * 2,
+            hidden_size=lstm_hidden_dim,
+            num_layers=lstm_layers,
+            batch_first=True # (batch, seq, feature) の入力を受け取る
+        )
+
         # --- 出力層 ---
-        self.output_proj = nn.Linear(channels * self.num_joints * 2, num_classes + 1)
+        # LSTMの出力に合わせて入力次元を変更
+        self.output_proj = nn.Linear(lstm_hidden_dim, num_classes + 1)
         self.dropout = nn.Dropout(dropout)
 
     def _unpack_features(self, x: Tensor) -> tuple[Tensor, Tensor]:
@@ -200,8 +209,6 @@ class STGCNModel(nn.Module):
 
         if not is_paper_mode:
             # --- 既存のパイプライン (386次元) の場合 ---
-            # 特徴量の内訳: [左手(pos,vel,acc,geo), 右手(pos,vel,acc,geo)]
-            # ST-GCNでは pos, vel, acc のみ使用する (geoはエッジ特徴量のため無視)
             left_flat = x[:, :, :193]
             right_flat = x[:, :, 193:386]
 
@@ -215,8 +222,6 @@ class STGCNModel(nn.Module):
             return hands_features[0], hands_features[1]
         else:
             # --- 論文ベースのパイプラインの場合 ---
-            # 特徴量の内訳: [座標(126), 速度(126, optional), 人体測定(420, optional)]
-            # 座標と速度は左右(63+63)に分割されている。
             current_offset = 0
             
             # 1. 座標 (常に存在する)
@@ -240,8 +245,6 @@ class STGCNModel(nn.Module):
                 right_vel = vel_feats[:, :, vel_dim//2:].reshape(B, T, self.num_joints, 3)
                 left_tensors.append(left_vel)
                 right_tensors.append(right_vel)
-
-            # 人体測定特徴量(anthropometric)はエッジ特徴量のため、このモデルでは無視する
             
             left_hand_features = torch.cat(left_tensors, dim=3)
             right_hand_features = torch.cat(right_tensors, dim=3)
@@ -268,14 +271,16 @@ class STGCNModel(nn.Module):
         # 3. 左右の特徴量を結合
         left_out = left_out.reshape(B, T, -1)
         right_out = right_out.reshape(B, T, -1)
-        
         combined = torch.cat([left_out, right_out], dim=2)
-        combined = self.dropout(combined)
         
-        # 4. 各タイムステップに対してクラス分類器を適用
-        logits = self.output_proj(combined)
+        # 4. LSTM層を適用
+        lstm_out, _ = self.lstm(combined)
+        lstm_out = self.dropout(lstm_out)
         
-        # 5. CTC損失のための後処理
+        # 5. 各タイムステップに対してクラス分類器を適用
+        logits = self.output_proj(lstm_out)
+        
+        # 6. CTC損失のための後処理
         log_probs = F.log_softmax(logits, dim=2)
         log_probs = log_probs.permute(1, 0, 2)
         
