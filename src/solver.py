@@ -25,7 +25,7 @@ class Solver(pl.LightningModule):
         self.save_hyperparameters()
         self.config = config
         self.loss_lambda = self.config['model'].get('loss_lambda', 0.8)
-        self.report_target = self.config['trainer'].get('report_target', 'ctc')
+        self.report_target = self.config['model'].get('report_target', 'ctc')
 
         # --- モデルの動的初期化 ---
         model_params = self.config['model'].copy()
