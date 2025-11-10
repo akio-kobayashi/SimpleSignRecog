@@ -81,6 +81,8 @@ class Solver(pl.LightningModule):
 
     def _calculate_ctc_metrics(self, ctc_log_probs, labels):
         preds = []
+        num_classes = self.config['model']['num_classes']
+
         # --- Beam Search Decoding ---
         if self.decode_method in ['beam_search', 'greedy'] and hasattr(self, 'beam_search_decoder'):
             probs = torch.exp(ctc_log_probs).cpu()
@@ -88,21 +90,22 @@ class Solver(pl.LightningModule):
             beam_width = self.config['trainer'].get('beam_width', 10) if self.decode_method == 'beam_search' else 1
             for i in range(batch_size):
                 sample_probs = probs[:, i, :].numpy() 
-                # pyctcdecodeは重複削除やblank削除を内部で行う
                 beams = self.beam_search_decoder.decode_beams(sample_probs, beam_width=beam_width)
-                decoded_text = beams[0][0] 
+                decoded_text = beams[0][0]
+                reference_label = labels[i].item()
                 
-                # デコード結果が単一の数字であり、それが正解ラベルと一致するかを評価
+                pred_label = -1
                 try:
-                    # デコード結果が '5' のような単一の数字かチェック
                     if len(decoded_text) == 1 and decoded_text.isdigit():
                         pred_label = int(decoded_text)
-                    else:
-                        # 空文字列、複数文字、数字以外などは不正解とする
-                        pred_label = -1 # 不正解を示すダミー値
-                    preds.append(torch.tensor(pred_label, device=self.device))
                 except (ValueError, IndexError):
-                    preds.append(torch.tensor(-1, device=self.device))
+                    pass # pred_label remains -1
+
+                # 正解でなければ、不正解として扱える有効なラベルを生成
+                if pred_label != reference_label:
+                    pred_label = (reference_label + 1) % num_classes
+                
+                preds.append(torch.tensor(pred_label, device=self.device))
 
         # --- Greedy Decoding (Correct CTC Collapse) ---
         else:
@@ -110,20 +113,19 @@ class Solver(pl.LightningModule):
             for i in range(best_path.size(1)):
                 path_for_sample = best_path[:, i]
                 
-                # 1. 連続する重複ラベルを削除
                 collapsed_path = torch.unique_consecutive(path_for_sample)
                 
-                # 2. blankトークンを削除
-                blank_token_id = self.config['model']['num_classes']
+                blank_token_id = num_classes
                 prediction_sequence = [p.item() for p in collapsed_path if p.item() != blank_token_id]
                 
-                # 3. 予測シーケンスが単一の正しいラベルか評価
-                if len(prediction_sequence) == 1:
-                    # 予測が単一の数字の場合、それを最終予測とする
-                    pred_label = prediction_sequence[0]
+                reference_label = labels[i].item()
+                
+                # 予測シーケンスが単一の正しいラベルか評価
+                if len(prediction_sequence) == 1 and prediction_sequence[0] == reference_label:
+                    pred_label = reference_label
                 else:
-                    # 予測が空、または複数の数字の場合は不正解とする
-                    pred_label = -1 # 不正解を示すダミー値
+                    # 不正解の場合、トーチメトリクスが扱える有効な不正解ラベルを生成
+                    pred_label = (reference_label + 1) % num_classes
                 
                 preds.append(torch.tensor(pred_label, device=self.device))
         
