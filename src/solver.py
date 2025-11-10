@@ -23,7 +23,8 @@ class Solver(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.config = config
-        self.loss_lambda = self.config['trainer'].get('loss_lambda', 0.8) # CTC損失の重み
+        # モデル設定から損失の重みを読み込む
+        self.loss_lambda = self.config['model'].get('loss_lambda', 0.8) # CTC損失の重み
 
         # --- モデルの動的初期化 ---
         model_params = self.config['model'].copy()
