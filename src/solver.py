@@ -204,8 +204,25 @@ class Solver(pl.LightningModule):
         
         loss = self.criterion(log_probs, labels, input_lengths, target_lengths)
         
-        f1, acc, precision, recall, _ = self._calculate_metrics(log_probs, labels)
+        f1, acc, precision, recall, preds = self._calculate_metrics(log_probs, labels)
         
+        # --- DEBUG PRINTS (only for the first batch) ---
+        if batch_idx == 0:
+            print("\n" + "="*20 + f" VALIDATION STEP (Epoch {self.current_epoch}) " + "="*20)
+            print(f"Batch index: {batch_idx}")
+            print(f"Input features shape: {features.shape}")
+            print(f"Input features mean: {torch.mean(features)}")
+            print(f"Input features std: {torch.std(features)}")
+            print(f"Model output log_probs shape: {log_probs.shape}")
+            print(f"Model output log_probs mean: {torch.mean(log_probs)}")
+            print(f"Is log_probs NaN: {torch.isnan(log_probs).any()}")
+            print(f"Is log_probs Inf: {torch.isinf(log_probs).any()}")
+            print(f"Calculated loss: {loss.item()}")
+            print(f"Sample labels: {labels[:5].tolist()}")
+            print(f"Sample predictions: {preds[:5].tolist()}")
+            print("="*60 + "\n")
+        # --- END DEBUG PRINTS ---
+
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log('val_f1', f1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
