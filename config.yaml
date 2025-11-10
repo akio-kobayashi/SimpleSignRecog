@@ -57,7 +57,7 @@ optimizer:
 
 # 学習率スケジューラの設定
 scheduler:
-  max_lr: 0.001
+  max_lr: 0.00001
   # total_steps は train.py 内で自動計算されます
 
 # PyTorch Lightning Trainerの設定
