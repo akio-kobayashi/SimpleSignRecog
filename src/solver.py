@@ -10,11 +10,12 @@ from collections import Counter
 
 # モデルクラスを型チェックのためにインポート
 from src.stgcn_model import STGCNModel
+from src.model import TwoStreamCNN
 
 class Solver(pl.LightningModule):
     """
     PyTorch Lightningを使用してモデルの学習、検証、テストのロジックをカプセル化するクラス。
-    モデルのタイプを判別し、STGCNModelの場合は補助損失を、それ以外のモデルではCTC損失のみを使用する。
+    モデルのタイプを判別し、補助損失や複数メトリクスの計算を動的に行う。
     """
     def __init__(self, config: dict):
         """
@@ -23,8 +24,8 @@ class Solver(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.config = config
-        # モデル設定から損失の重みを読み込む
-        self.loss_lambda = self.config['model'].get('loss_lambda', 0.8) # CTC損失の重み
+        self.loss_lambda = self.config['model'].get('loss_lambda', 0.8)
+        self.report_target = self.config['trainer'].get('report_target', 'ctc')
 
         # --- モデルの動的初期化 ---
         model_params = self.config['model'].copy()
@@ -37,28 +38,25 @@ class Solver(pl.LightningModule):
         except (ImportError, AttributeError) as e:
             raise type(e)(f"Failed to import model '{class_name}' from '{module_path}': {e}")
             
-        if class_name == 'STGCNModel':
+        if class_name in ['STGCNModel', 'TwoStreamCNN']:
             model_params['features_config'] = self.config.get('features', {})
 
-        # --- モデルの__init__が受け入れる引数のみを渡すようにフィルタリング ---
         import inspect
         sig = inspect.signature(model_class.__init__)
         allowed_args = {p.name for p in sig.parameters.values()}
-        
         filtered_model_params = {k: v for k, v in model_params.items() if k in allowed_args}
-        
         self.model = model_class(**filtered_model_params)
 
         # --- 損失関数の定義 ---
         num_classes = self.config['model']['num_classes']
         self.ctc_criterion = nn.CTCLoss(blank=num_classes, zero_infinity=True)
-        if isinstance(self.model, STGCNModel):
+        if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
             self.ce_criterion = nn.CrossEntropyLoss()
 
-        # --- 評価指標のセットアップ (CTC用とCE用に分離) ---
+        # --- 評価指標のセットアップ ---
         average_mode = self.config['trainer']['metrics_average_mode']
         self.ctc_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
-        if isinstance(self.model, STGCNModel):
+        if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
             self.ce_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
 
         # --- CTCデコーダーのセットアップ ---
@@ -72,7 +70,6 @@ class Solver(pl.LightningModule):
                 print("WARN: 'pyctcdecode' is not installed. Beam search decoding will not be available.")
                 self.decode_method = 'majority_vote'
 
-        # テスト結果を保存するためのリスト
         self.test_labels_for_report = []
         self.test_preds_for_report = []
 
@@ -82,62 +79,51 @@ class Solver(pl.LightningModule):
     def _calculate_ctc_metrics(self, ctc_log_probs, labels):
         preds = []
         num_classes = self.config['model']['num_classes']
-
-        # --- Beam Search Decoding ---
         if self.decode_method in ['beam_search', 'greedy'] and hasattr(self, 'beam_search_decoder'):
             probs = torch.exp(ctc_log_probs).cpu()
             batch_size = probs.size(1)
             beam_width = self.config['trainer'].get('beam_width', 10) if self.decode_method == 'beam_search' else 1
             for i in range(batch_size):
-                sample_probs = probs[:, i, :].numpy() 
+                sample_probs = probs[:, i, :].numpy()
                 beams = self.beam_search_decoder.decode_beams(sample_probs, beam_width=beam_width)
                 decoded_text = beams[0][0]
                 reference_label = labels[i].item()
-                
                 pred_label = -1
                 try:
                     if len(decoded_text) == 1 and decoded_text.isdigit():
                         pred_label = int(decoded_text)
                 except (ValueError, IndexError):
-                    pass # pred_label remains -1
-
-                # 正解でなければ、不正解として扱える有効なラベルを生成
+                    pass
                 if pred_label != reference_label:
                     pred_label = (reference_label + 1) % num_classes
-                
                 preds.append(torch.tensor(pred_label, device=self.device))
-
-        # --- Greedy Decoding (Correct CTC Collapse) ---
         else:
             best_path = torch.argmax(ctc_log_probs, dim=2)
             for i in range(best_path.size(1)):
                 path_for_sample = best_path[:, i]
-                
                 collapsed_path = torch.unique_consecutive(path_for_sample)
-                
-                blank_token_id = num_classes
-                prediction_sequence = [p.item() for p in collapsed_path if p.item() != blank_token_id]
-                
+                prediction_sequence = [p.item() for p in collapsed_path if p.item() != num_classes]
                 reference_label = labels[i].item()
-                
-                # 予測シーケンスが単一の正しいラベルか評価
                 if len(prediction_sequence) == 1 and prediction_sequence[0] == reference_label:
                     pred_label = reference_label
                 else:
-                    # 不正解の場合、トーチメトリクスが扱える有効な不正解ラベルを生成
                     pred_label = (reference_label + 1) % num_classes
-                
                 preds.append(torch.tensor(pred_label, device=self.device))
-        
         preds = torch.stack(preds)
         acc = self.ctc_acc(preds, labels)
+        return acc, preds
+
+    def _calculate_ce_metrics(self, aux_logits, labels):
+        preds = torch.argmax(aux_logits, dim=1)
+        acc = self.ce_acc(preds, labels)
         return acc, preds
 
     def _shared_step(self, batch):
         features, lengths, labels = batch
         model_output = self(features, lengths)
+        is_dual_head = isinstance(self.model, (STGCNModel, TwoStreamCNN))
 
-        if isinstance(self.model, STGCNModel):
+        if is_dual_head:
             ctc_log_probs, aux_logits = model_output
             loss_ce = self.ce_criterion(aux_logits, labels)
         else:
@@ -150,7 +136,7 @@ class Solver(pl.LightningModule):
         target_lengths = torch.ones(batch_size, dtype=torch.long, device=self.device)
         loss_ctc = self.ctc_criterion(ctc_log_probs, labels, input_lengths, target_lengths)
 
-        if isinstance(self.model, STGCNModel):
+        if is_dual_head:
             loss = self.loss_lambda * loss_ctc + (1 - self.loss_lambda) * loss_ce
         else:
             loss = loss_ctc
@@ -159,10 +145,10 @@ class Solver(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss, loss_ctc, loss_ce, _, _, _ = self._shared_step(batch)
-        self.log('train_loss', loss, on_step=True, on_epoch=True)
-        self.log('train_loss_ctc', loss_ctc, on_step=True, on_epoch=True)
-        if isinstance(self.model, STGCNModel):
-            self.log('train_loss_ce', loss_ce, on_step=True, on_epoch=True)
+        self.log('train/loss', loss, on_step=True, on_epoch=True)
+        self.log('train/loss_ctc', loss_ctc, on_step=True, on_epoch=True)
+        if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
+            self.log('train/loss_ce', loss_ce, on_step=True, on_epoch=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -170,23 +156,37 @@ class Solver(pl.LightningModule):
         
         acc_ctc, _ = self._calculate_ctc_metrics(ctc_log_probs, labels)
         
-        self.log('val_loss', loss, prog_bar=True)
-        self.log('val_acc_ctc', acc_ctc, prog_bar=True)
-        self.log('val_loss_ctc', loss_ctc)
+        self.log('val/loss', loss, prog_bar=True)
+        self.log('val/acc_ctc', acc_ctc, prog_bar=True)
+        self.log('val/loss_ctc', loss_ctc)
 
-        if isinstance(self.model, STGCNModel) and aux_logits is not None:
-            ce_preds = torch.argmax(aux_logits, dim=1)
-            acc_ce = self.ce_acc(ce_preds, labels)
-            self.log('val_acc_ce', acc_ce, prog_bar=True)
-            self.log('val_loss_ce', loss_ce)
+        if isinstance(self.model, (STGCNModel, TwoStreamCNN)) and aux_logits is not None:
+            acc_ce, _ = self._calculate_ce_metrics(aux_logits, labels)
+            self.log('val/acc_ce', acc_ce, prog_bar=True)
+            self.log('val/loss_ce', loss_ce)
         return loss
 
     def test_step(self, batch, batch_idx):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
-        acc, preds = self._calculate_ctc_metrics(ctc_log_probs, labels)
-        self.log('test_loss', loss)
-        self.log('test_acc', acc)
-        self.test_preds_for_report.append(preds.cpu())
+        
+        acc_ctc, ctc_preds = self._calculate_ctc_metrics(ctc_log_probs, labels)
+        self.log('test/loss', loss)
+        self.log('test/acc_ctc', acc_ctc)
+        self.log('test/loss_ctc', loss_ctc)
+
+        is_dual_head = isinstance(self.model, (STGCNModel, TwoStreamCNN))
+        if is_dual_head and aux_logits is not None:
+            acc_ce, ce_preds = self._calculate_ce_metrics(aux_logits, labels)
+            self.log('test/acc_ce', acc_ce)
+            self.log('test/loss_ce', loss_ce)
+        else:
+            ce_preds = None
+
+        if self.report_target == 'ce' and ce_preds is not None:
+            self.test_preds_for_report.append(ce_preds.cpu())
+        else:
+            self.test_preds_for_report.append(ctc_preds.cpu())
+            
         self.test_labels_for_report.append(labels.cpu())
         return loss
 

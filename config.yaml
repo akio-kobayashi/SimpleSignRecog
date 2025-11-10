@@ -66,6 +66,7 @@ trainer:
   metrics_average_mode: "macro" # "macro" or "weighted"
   decode_method: "majority_vote" # "majority_vote" or "greedy" or "beam_search"
   beam_width: 10 # beam searchの幅
+  report_target: 'ctc' # 最終レポートの計算対象: 'ctc' または 'ce'
   max_epochs: 50
   accelerator: auto
   log_every_n_steps: 1
