@@ -132,10 +132,10 @@ class Solver(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss, loss_ctc, loss_ce, _, _, _ = self._shared_step(batch)
-        self.log('train/loss', loss, on_step=True, on_epoch=True)
-        self.log('train/loss_ctc', loss_ctc, on_step=True, on_epoch=True)
+        self.log('train_loss', loss, on_step=True, on_epoch=True)
+        self.log('train_loss_ctc', loss_ctc, on_step=True, on_epoch=True)
         if isinstance(self.model, STGCNModel):
-            self.log('train/loss_ce', loss_ce, on_step=True, on_epoch=True)
+            self.log('train_loss_ce', loss_ce, on_step=True, on_epoch=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -143,22 +143,22 @@ class Solver(pl.LightningModule):
         
         acc_ctc, _ = self._calculate_ctc_metrics(ctc_log_probs, labels)
         
-        self.log('val/loss', loss, prog_bar=True)
-        self.log('val/acc_ctc', acc_ctc, prog_bar=True)
-        self.log('val/loss_ctc', loss_ctc)
+        self.log('val_loss', loss, prog_bar=True)
+        self.log('val_acc_ctc', acc_ctc, prog_bar=True)
+        self.log('val_loss_ctc', loss_ctc)
 
         if isinstance(self.model, STGCNModel) and aux_logits is not None:
             ce_preds = torch.argmax(aux_logits, dim=1)
             acc_ce = self.ce_acc(ce_preds, labels)
-            self.log('val/acc_ce', acc_ce, prog_bar=True)
-            self.log('val/loss_ce', loss_ce)
+            self.log('val_acc_ce', acc_ce, prog_bar=True)
+            self.log('val_loss_ce', loss_ce)
         return loss
 
     def test_step(self, batch, batch_idx):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
         acc, preds = self._calculate_ctc_metrics(ctc_log_probs, labels)
-        self.log('test/loss', loss)
-        self.log('test/acc', acc)
+        self.log('test_loss', loss)
+        self.log('test_acc', acc)
         self.test_preds_for_report.append(preds.cpu())
         self.test_labels_for_report.append(labels.cpu())
         return loss
