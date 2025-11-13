@@ -10,6 +10,7 @@ import torch
 import pandas as pd
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
+from pytorch_lightning.callbacks import EarlyStopping
 from sklearn.model_selection import StratifiedKFold, train_test_split, LeaveOneOut
 from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
@@ -224,6 +225,12 @@ def main(config: dict, checkpoint_path: str | None = None):
             filename="{epoch}-{val_loss:.2f}"
         )
 
+        # EarlyStoppingコールバックを初期化
+        callbacks = [checkpoint_callback]
+        if "early_stopping" in config:
+            early_stopping_callback = EarlyStopping(**config["early_stopping"])
+            callbacks.append(early_stopping_callback)
+
         # PyTorch LightningのTrainerを初期化
         # Trainerに渡す設定と、Solver/他のロジックで使う設定を分離
         trainer_config = config["trainer"].copy()
@@ -233,7 +240,7 @@ def main(config: dict, checkpoint_path: str | None = None):
         trainer_config.pop("beam_width", None) # beam_widthもTrainerからは削除
 
         trainer = pl.Trainer(
-            callbacks=[checkpoint_callback], # コールバック（チェックポイント保存など）を設定
+            callbacks=callbacks, # コールバック（チェックポイント保存など）を設定
             logger=logger, # ロガーのリストを設定
             **trainer_config # 不要な引数を削除したconfigを渡す
         )

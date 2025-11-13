@@ -103,3 +103,10 @@ cross_subject:
       source_landmark_dir: "."
   # 出力ファイル名
   output_stats_path: "results_cross_subject_stats.csv"
+
+# --- EarlyStoppingの設定 ---
+early_stopping:
+  monitor: "val_loss"
+  patience: 5
+  mode: "min"
+  verbose: true

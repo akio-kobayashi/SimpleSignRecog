@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader, random_split, ConcatDataset
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
+from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, EarlyStopping
 from pathlib import Path
 from collections import defaultdict
 import os
@@ -111,11 +111,16 @@ def main(args):
         logger = TensorBoardLogger(save_dir=config['logger']['save_dir'], name=f"{config['logger']['name']}_cs_fold_{i+1}")
         checkpoint_callback = ModelCheckpoint(dirpath=f"{config['checkpoint']['dirpath']}/cs_fold_{i+1}/", monitor=config['checkpoint']['monitor'], mode=config['checkpoint']['mode'])
         
+        callbacks = [checkpoint_callback, TQDMProgressBar(refresh_rate=10)]
+        if "early_stopping" in config:
+            early_stopping_callback = EarlyStopping(**config["early_stopping"])
+            callbacks.append(early_stopping_callback)
+
         trainer = pl.Trainer(
             max_epochs=config['trainer']['max_epochs'],
             accelerator=config['trainer']['accelerator'],
             logger=logger,
-            callbacks=[checkpoint_callback, TQDMProgressBar(refresh_rate=10)],
+            callbacks=callbacks,
             log_every_n_steps=config['trainer']['log_every_n_steps'],
             enable_progress_bar=True
         )
