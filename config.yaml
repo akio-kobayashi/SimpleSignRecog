@@ -91,3 +91,13 @@ output:
   rf_results_path: results_rf.csv
   xgboost_results_path: results_xgboost.csv
   nn_results_path: results_nn.csv
+
+# --- 話者間交差検証用の設定 (新規追加) ---
+cross_subject:
+  # 学習用話者のデータパス
+  train_metadata_path: "output_data/speaker_A_metadata.csv"
+  train_source_landmark_dir: "."
+
+  # 評価用話者のデータパス
+  eval_metadata_path: "output_data/speaker_B_metadata.csv"
+  eval_source_landmark_dir: "."
