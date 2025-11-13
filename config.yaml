@@ -91,13 +91,15 @@ output:
   rf_results_path: results_rf.csv
   xgboost_results_path: results_xgboost.csv
   nn_results_path: results_nn.csv
+  cv_stats_path: "results_cv_stats.csv" # K-Fold/LOO CVの統計量出力パス
 
-# --- 話者間交差検証用の設定 (新規追加) ---
+
+# --- 話者間交-差検証用の設定 (新規追加) ---
 cross_subject:
-  # 学習用話者のデータパス
-  train_metadata_path: "output_data/speaker_A_metadata.csv"
-  train_source_landmark_dir: "."
-
-  # 評価用話者のデータパス
-  eval_metadata_path: "output_data/speaker_B_metadata.csv"
-  eval_source_landmark_dir: "."
+  subjects:
+    - metadata_path: "output_data/speaker_A_metadata.csv"
+      source_landmark_dir: "."
+    - metadata_path: "output_data/speaker_B_metadata.csv"
+      source_landmark_dir: "."
+  # 出力ファイル名
+  output_stats_path: "results_cross_subject_stats.csv"

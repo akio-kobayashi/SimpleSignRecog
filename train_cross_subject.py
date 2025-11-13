@@ -1,15 +1,15 @@
-
-
 import argparse
 import yaml
 import pandas as pd
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, ConcatDataset
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
 from pathlib import Path
+from collections import defaultdict
+import os
 
 from src.solver import Solver
 
@@ -20,6 +20,9 @@ class NpzLandmarkDataset(Dataset):
     def __init__(self, metadata_path: str, landmark_dir: str):
         self.metadata = pd.read_csv(metadata_path)
         self.landmark_dir = Path(landmark_dir)
+        # class_labelが0から始まっていない場合や、連続していない場合に対応
+        self.class_labels = sorted(self.metadata['class_label'].unique())
+        self.class_map = {label: i for i, label in enumerate(self.class_labels)}
 
     def __len__(self):
         return len(self.metadata)
@@ -31,14 +34,11 @@ class NpzLandmarkDataset(Dataset):
         with np.load(npz_path) as data:
             landmarks = data['landmarks'].astype(np.float32)
 
-        label = int(row['class_label'])
+        # class_labelを0からの連番にマッピング
+        label = self.class_map[row['class_label']]
         
-        # 特徴量とラベルをTensorに変換
         features = torch.from_numpy(landmarks)
         label_tensor = torch.tensor(label, dtype=torch.long)
-        
-        # Solverが (features, lengths, labels) のタプルを期待するため、
-        # lengthsもダミーで追加
         lengths = torch.tensor(features.shape[0], dtype=torch.long)
 
         return features, lengths, label_tensor
@@ -48,106 +48,124 @@ def collate_fn(batch):
     異なる長さのシーケンスをパディングするためのCollate関数。
     """
     features, lengths, labels = zip(*batch)
-    
-    # 特徴量をパディング
     padded_features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True, padding_value=0.0)
-    
-    # ラベルと長さをスタック
     labels = torch.stack(labels)
     lengths = torch.stack(lengths)
-    
     return padded_features, lengths, labels
 
 def main(args):
     """
     メインの学習・評価処理。
     """
-    # --- 設定ファイルの読み込み ---
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
     pl.seed_everything(config.get('seed', 42))
 
     cs_config = config.get('cross_subject')
-    if not cs_config:
-        raise ValueError("`cross_subject` section not found in config file.")
+    if not cs_config or 'subjects' not in cs_config:
+        raise ValueError("`cross_subject.subjects` section not found in config file.")
 
-    # --- データセットとデータローダーの作成 ---
-    # 学習・検証用データ
-    train_val_dataset = NpzLandmarkDataset(
-        metadata_path=cs_config['train_metadata_path'],
-        landmark_dir=cs_config['train_source_landmark_dir']
-    )
+    # --- 全話者のデータセットを事前にロード ---
+    all_subject_datasets = [
+        NpzLandmarkDataset(
+            metadata_path=s['metadata_path'],
+            landmark_dir=s['source_landmark_dir']
+        ) for s in cs_config['subjects']
+    ]
     
-    # 学習データと検証データに分割
-    val_ratio = config['data'].get('validation_split_ratio', 0.1)
-    n_train_val = len(train_val_dataset)
-    n_val = int(n_train_val * val_ratio)
-    n_train = n_train_val - n_val
-    train_dataset, val_dataset = random_split(train_val_dataset, [n_train, n_val])
+    num_folds = len(all_subject_datasets)
+    fold_metrics = defaultdict(list)
 
-    # 評価（テスト）用データ
-    test_dataset = NpzLandmarkDataset(
-        metadata_path=cs_config['eval_metadata_path'],
-        landmark_dir=cs_config['eval_source_landmark_dir']
-    )
-
-    batch_size = config['data']['batch_size']
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=os.cpu_count())
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=os.cpu_count())
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=os.cpu_count())
-    
-    print(f"Training data: {len(train_dataset)} samples")
-    print(f"Validation data: {len(val_dataset)} samples")
-    print(f"Testing data: {len(test_dataset)} samples")
-
-    # --- モデル(Solver)の初期化 ---
-    # スケジューラのtotal_stepsを計算
-    if 'scheduler' in config:
-        config['scheduler']['total_steps'] = len(train_loader) * config['trainer']['max_epochs']
+    # --- 交差検証ループ ---
+    for i in range(num_folds):
+        print(f"\n{'='*20} FOLD {i+1}/{num_folds} {'='*20}")
         
-    solver = Solver(config)
+        # --- データセットの準備 ---
+        test_dataset = all_subject_datasets[i]
+        train_val_datasets = [ds for j, ds in enumerate(all_subject_datasets) if i != j]
+        train_val_dataset = ConcatDataset(train_val_datasets)
 
-    # --- LoggerとCallbackの初期化 ---
-    logger = TensorBoardLogger(
-        save_dir=config['logger']['save_dir'],
-        name=f"{config['logger']['name']}_cross_subject"
-    )
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{config['checkpoint']['dirpath']}/cross_subject/",
-        monitor=config['checkpoint']['monitor'],
-        save_top_k=config['checkpoint']['save_top_k'],
-        mode=config['checkpoint']['mode'],
-    )
-    progress_bar = TQDMProgressBar()
+        val_ratio = config['data'].get('validation_split_ratio', 0.1)
+        n_train_val = len(train_val_dataset)
+        n_val = int(n_train_val * val_ratio)
+        n_train = n_train_val - n_val
+        train_dataset, val_dataset = random_split(train_val_dataset, [n_train, n_val])
 
-    # --- Trainerの初期化と実行 ---
-    trainer = pl.Trainer(
-        max_epochs=config['trainer']['max_epochs'],
-        accelerator=config['trainer']['accelerator'],
-        logger=logger,
-        callbacks=[checkpoint_callback, progress_bar],
-        log_every_n_steps=config['trainer']['log_every_n_steps']
-    )
+        batch_size = config['data']['batch_size']
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=os.cpu_count())
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=os.cpu_count())
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=os.cpu_count())
+        
+        print(f"Training data subjects: {[j for j in range(num_folds) if i != j]}")
+        print(f"Testing data subject: {i}")
+        print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}, Test samples: {len(test_dataset)}")
 
-    # --- 学習 ---
-    print("\n--- Starting Training ---")
-    trainer.fit(solver, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        # --- モデル、Trainerの初期化 ---
+        if 'scheduler' in config:
+            config['scheduler']['total_steps'] = len(train_loader) * config['trainer']['max_epochs']
+        
+        solver = Solver(config)
+        
+        # 毎回新しいログディレクトリとチェックポイントを作成
+        logger = TensorBoardLogger(save_dir=config['logger']['save_dir'], name=f"{config['logger']['name']}_cs_fold_{i+1}")
+        checkpoint_callback = ModelCheckpoint(dirpath=f"{config['checkpoint']['dirpath']}/cs_fold_{i+1}/", monitor=config['checkpoint']['monitor'], mode=config['checkpoint']['mode'])
+        
+        trainer = pl.Trainer(
+            max_epochs=config['trainer']['max_epochs'],
+            accelerator=config['trainer']['accelerator'],
+            logger=logger,
+            callbacks=[checkpoint_callback, TQDMProgressBar(refresh_rate=10)],
+            log_every_n_steps=config['trainer']['log_every_n_steps'],
+            enable_progress_bar=True
+        )
+
+        # --- 学習 & テスト ---
+        trainer.fit(solver, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        test_results = trainer.test(dataloaders=test_loader, ckpt_path='best')
+        
+        # --- メトリクスの収集 ---
+        # test_results[0] には {'test_loss': ..., 'test_acc_ctc': ...} のような辞書が入っている
+        results_dict = test_results[0]
+        for key, value in results_dict.items():
+            fold_metrics[key].append(value)
+
+    # --- 全フォールドのメトリクスを集計 ---
+    stats_rows = []
+    num_classes = config['model']['num_classes']
     
-    # --- 評価 ---
-    print("\n--- Starting Testing on Unseen Speaker ---")
-    # best_model_path=Noneにすると、fit後の最新のモデルでテストする
-    test_results = trainer.test(dataloaders=test_loader, ckpt_path='best')
+    # torchmetricsが出力するメトリクス名に合わせて集計
+    # 例: 'test_acc_ctc', 'test_f1_macro', 'test_precision_macro' など
+    for metric_name, values in fold_metrics.items():
+        mean = np.mean(values)
+        std = np.std(values)
+        
+        # メトリック名から指標とクラスを分離 (例: test_acc_ctc_class_5 -> (test_acc_ctc, 5))
+        parts = metric_name.split('_')
+        class_label = f"class_{parts[-1]}" if parts[-1].isdigit() else "overall"
+        base_metric_name = "_".join(parts[:-1]) if class_label != "overall" else metric_name
 
-    print("\n--- Cross-Subject Validation Results ---")
-    print(test_results)
+        stats_rows.append({
+            "metric": base_metric_name,
+            "class_label": class_label,
+            "mean": mean,
+            "std": std
+        })
+
+    stats_df = pd.DataFrame(stats_rows)
+    
+    # --- 結果の保存 ---
+    output_path = cs_config.get("output_stats_path", "results_cross_subject_stats.csv")
+    stats_df.to_csv(output_path, index=False)
+
+    print(f"\n--- Aggregated Cross-Subject Validation Stats ---")
+    print(stats_df)
+    print(f"\nStatistics saved to {output_path}")
 
 
 if __name__ == '__main__':
-    import os
     parser = argparse.ArgumentParser(description="Cross-subject validation training script.")
     parser.add_argument('-c', '--config', type=str, default='config.yaml',
                         help='Path to the configuration file.')
     args = parser.parse_args()
     main(args)
-

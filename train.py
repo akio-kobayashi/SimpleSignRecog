@@ -288,6 +288,39 @@ def main(config: dict, checkpoint_path: str | None = None):
     output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
     output_dir.mkdir(exist_ok=True, parents=True)
 
+    # --- 3a. グラフ描画用の統計量（平均・標準偏差）を計算・保存 ---
+    if all_fold_metrics:
+        metrics_df = pd.DataFrame(all_fold_metrics)
+        
+        # 各指標の平均と標準偏差を計算
+        stats = {
+            'mean': metrics_df.mean(),
+            'std': metrics_df.std()
+        }
+        stats_df = pd.DataFrame(stats)
+        
+        # データを縦長形式に変形
+        stats_df = stats_df.reset_index().rename(columns={'index': 'metric_name'})
+        
+        # メトリック名からクラスを分離
+        def get_class_label(metric_name):
+            parts = metric_name.split('_')
+            if parts[-1].isdigit():
+                return f"class_{parts[-1]}"
+            return "overall"
+        
+        stats_df['class_label'] = stats_df['metric_name'].apply(get_class_label)
+        stats_df['metric'] = stats_df['metric_name'].apply(lambda x: x.rsplit('_', 1)[0] if x.split('_')[-1].isdigit() else x)
+        
+        # 必要な列を選択・リネーム
+        final_stats_df = stats_df[['metric', 'class_label', 'mean', 'std']]
+        
+        # CSVに保存
+        stats_output_path = config.get("output", {}).get("cv_stats_path", "results_cv_stats.csv")
+        final_stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
+        print(f"\nグラフ描画用の統計量を保存しました: {stats_output_path}")
+        print(final_stats_df)
+
     if not is_loocv:
         # --- k-fold: 分割レポートを集計し、平均を計算 ---
         if not all_fold_reports:
