@@ -56,8 +56,11 @@ class Solver(pl.LightningModule):
         # --- 評価指標のセットアップ ---
         average_mode = self.config['trainer']['metrics_average_mode']
         self.ctc_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
+        self.ctc_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
+
         if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
             self.ce_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
+            self.ce_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
 
         # --- CTCデコーダーのセットアップ ---
         self.decode_method = self.config['trainer'].get('decode_method', 'majority_vote')
@@ -170,15 +173,25 @@ class Solver(pl.LightningModule):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
         
         acc_ctc, ctc_preds = self._calculate_ctc_metrics(ctc_log_probs, labels)
-        self.log('test_loss', loss)
-        self.log('test_acc_ctc', acc_ctc)
-        self.log('test_loss_ctc', loss_ctc)
+        self.log('test_loss', loss, on_step=False, on_epoch=True)
+        self.log('test_acc_ctc', acc_ctc, on_step=False, on_epoch=True)
+        self.log('test_loss_ctc', loss_ctc, on_step=False, on_epoch=True)
+
+        # クラスごとのCTC精度を計算・ログ記録
+        per_class_acc_ctc = self.ctc_acc_per_class(ctc_preds, labels)
+        for i, acc in enumerate(per_class_acc_ctc):
+            self.log(f'test_acc_ctc_class_{i}', acc, on_step=False, on_epoch=True)
 
         is_dual_head = isinstance(self.model, (STGCNModel, TwoStreamCNN))
         if is_dual_head and aux_logits is not None:
             acc_ce, ce_preds = self._calculate_ce_metrics(aux_logits, labels)
-            self.log('test_acc_ce', acc_ce)
-            self.log('test_loss_ce', loss_ce)
+            self.log('test_acc_ce', acc_ce, on_step=False, on_epoch=True)
+            self.log('test_loss_ce', loss_ce, on_step=False, on_epoch=True)
+
+            # クラスごとのCE精度を計算・ログ記録
+            per_class_acc_ce = self.ce_acc_per_class(ce_preds, labels)
+            for i, acc in enumerate(per_class_acc_ce):
+                self.log(f'test_acc_ce_class_{i}', acc, on_step=False, on_epoch=True)
         else:
             ce_preds = None
 
