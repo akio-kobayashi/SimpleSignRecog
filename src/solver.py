@@ -55,11 +55,23 @@ class Solver(pl.LightningModule):
 
         # --- 評価指標のセットアップ ---
         average_mode = self.config['trainer']['metrics_average_mode']
-        self.ctc_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
-        self.ctc_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
+        metrics = {
+            "acc": MulticlassAccuracy,
+            "precision": MulticlassPrecision,
+            "recall": MulticlassRecall,
+            "f1": MulticlassF1Score,
+        }
 
+        # CTC Head Metrics
+        for name, metric_cls in metrics.items():
+            setattr(self, f"ctc_{name}", metric_cls(num_classes=num_classes, average=average_mode))
+            setattr(self, f"ctc_{name}_per_class", metric_cls(num_classes=num_classes, average=None))
+
+        # CE Head Metrics (if applicable)
         if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
-            self.ce_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
+            for name, metric_cls in metrics.items():
+                setattr(self, f"ce_{name}", metric_cls(num_classes=num_classes, average=average_mode))
+                setattr(self, f"ce_{name}_per_class", metric_cls(num_classes=num_classes, average=None))
             self.ce_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
 
         # --- CTCデコーダーのセットアップ ---
@@ -104,15 +116,21 @@ class Solver(pl.LightningModule):
             best_path = torch.argmax(ctc_log_probs, dim=2)
             for i in range(best_path.size(1)):
                 path_for_sample = best_path[:, i]
-                collapsed_path = torch.unique_consecutive(path_for_sample)
-                prediction_sequence = [p.item() for p in collapsed_path if p.item() != num_classes]
-                reference_label = labels[i].item()
-                if len(prediction_sequence) == 1 and prediction_sequence[0] == reference_label:
-                    pred_label = reference_label
+                # ブランク(num_classes)を除いたトークンのみを考慮
+                non_blank_tokens = [p.item() for p in path_for_sample if p.item() != num_classes]
+                
+                if not non_blank_tokens:
+                    # ブランクしか出力されなかった場合、最もありえないラベルとして予測
+                    # (これは稀なケースだが、エラーを防ぐため)
+                    pred_label = (labels[i].item() + 1) % num_classes
                 else:
-                    pred_label = (reference_label + 1) % num_classes
+                    # 最も頻繁に出現したトークンを予測ラベルとする (多数決)
+                    counts = Counter(non_blank_tokens)
+                    pred_label = counts.most_common(1)[0][0]
                 preds.append(torch.tensor(pred_label, device=self.device))
+
         preds = torch.stack(preds)
+        # メインの正解率（マクロ平均など）を計算して返す
         acc = self.ctc_acc(preds, labels)
         return acc, preds
 
@@ -172,29 +190,42 @@ class Solver(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
         
+        # --- CTC Headの評価 ---
         acc_ctc, ctc_preds = self._calculate_ctc_metrics(ctc_log_probs, labels)
         self.log('test_loss', loss, on_step=False, on_epoch=True)
         self.log('test_acc_ctc', acc_ctc, on_step=False, on_epoch=True)
         self.log('test_loss_ctc', loss_ctc, on_step=False, on_epoch=True)
+        
+        # 全体指標の状態を更新
+        self.ctc_precision(ctc_preds, labels)
+        self.ctc_recall(ctc_preds, labels)
+        self.ctc_f1(ctc_preds, labels)
+        # クラスごと指標の状態を更新
+        self.ctc_acc_per_class.update(ctc_preds, labels)
+        self.ctc_precision_per_class.update(ctc_preds, labels)
+        self.ctc_recall_per_class.update(ctc_preds, labels)
+        self.ctc_f1_per_class.update(ctc_preds, labels)
 
-        # クラスごとのCTC精度を計算・ログ記録
-        per_class_acc_ctc = self.ctc_acc_per_class(ctc_preds, labels)
-        for i, acc in enumerate(per_class_acc_ctc):
-            self.log(f'test_acc_ctc_class_{i}', acc, on_step=False, on_epoch=True)
-
+        # --- CE Headの評価 ---
         is_dual_head = isinstance(self.model, (STGCNModel, TwoStreamCNN))
         if is_dual_head and aux_logits is not None:
             acc_ce, ce_preds = self._calculate_ce_metrics(aux_logits, labels)
             self.log('test_acc_ce', acc_ce, on_step=False, on_epoch=True)
             self.log('test_loss_ce', loss_ce, on_step=False, on_epoch=True)
 
-            # クラスごとのCE精度を計算・ログ記録
-            per_class_acc_ce = self.ce_acc_per_class(ce_preds, labels)
-            for i, acc in enumerate(per_class_acc_ce):
-                self.log(f'test_acc_ce_class_{i}', acc, on_step=False, on_epoch=True)
+            # 全体指標の状態を更新
+            self.ce_precision(ce_preds, labels)
+            self.ce_recall(ce_preds, labels)
+            self.ce_f1(ce_preds, labels)
+            # クラスごと指標の状態を更新
+            self.ce_acc_per_class.update(ce_preds, labels)
+            self.ce_precision_per_class.update(ce_preds, labels)
+            self.ce_recall_per_class.update(ce_preds, labels)
+            self.ce_f1_per_class.update(ce_preds, labels)
         else:
             ce_preds = None
 
+        # classification_report用のラベルを収集
         if self.report_target == 'ce' and ce_preds is not None:
             self.test_preds_for_report.append(ce_preds.cpu())
         else:
@@ -204,12 +235,45 @@ class Solver(pl.LightningModule):
         return loss
 
     def on_test_epoch_end(self):
+        # --- classification_report用のラベルを準備 ---
         if self.test_preds_for_report:
             self.test_preds = torch.cat(self.test_preds_for_report)
         if self.test_labels_for_report:
             self.test_labels = torch.cat(self.test_labels_for_report)
         self.test_preds_for_report.clear()
         self.test_labels_for_report.clear()
+
+        # --- 全体およびクラスごとの指標を計算・ログ記録 ---
+        metric_names = ["acc", "precision", "recall", "f1"]
+        
+        # CTC Head
+        for name in metric_names:
+            # 全体指標
+            metric_obj = getattr(self, f"ctc_{name}")
+            self.log(f"test_{name}_ctc", metric_obj.compute(), on_epoch=True)
+            metric_obj.reset()
+            
+            # クラスごと指標
+            metric_per_class_obj = getattr(self, f"ctc_{name}_per_class")
+            per_class_values = metric_per_class_obj.compute()
+            for i, value in enumerate(per_class_values):
+                self.log(f"test_{name}_ctc_class_{i}", value, on_epoch=True)
+            metric_per_class_obj.reset()
+
+        # CE Head
+        if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
+            for name in metric_names:
+                # 全体指標
+                metric_obj = getattr(self, f"ce_{name}")
+                self.log(f"test_{name}_ce", metric_obj.compute(), on_epoch=True)
+                metric_obj.reset()
+
+                # クラスごと指標
+                metric_per_class_obj = getattr(self, f"ce_{name}_per_class")
+                per_class_values = metric_per_class_obj.compute()
+                for i, value in enumerate(per_class_values):
+                    self.log(f"test_{name}_ce_class_{i}", value, on_epoch=True)
+                metric_per_class_obj.reset()
 
     def configure_optimizers(self):
         optimizer_config = self.config['optimizer']
