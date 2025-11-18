@@ -117,4 +117,4 @@ def verify_metrics_calculation():
 
 
 if __name__ == '__main__':
-    run_verification()
+    verify_metrics_calculation()
