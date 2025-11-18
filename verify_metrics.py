@@ -1,3 +1,5 @@
+
+
 import torch
 import yaml
 from src.solver import Solver
@@ -21,46 +23,28 @@ def verify_metrics_calculation():
         return
 
     # num_classesをダミーデータに合わせて一時的に変更
-    config['model']['num_classes'] = 5
+    # 予測に '9' が出てくるため、少なくとも10以上にする必要がある
+    config['model']['num_classes'] = 10
     solver = Solver(config)
     print("Solverを初期化しました。")
 
     # 2. ダミーデータと期待される結果を定義
-    # 2バッチ分のデータを作成
     batches = [
         {"preds": torch.tensor([0, 1, 1, 2, 9]), "labels": torch.tensor([0, 0, 1, 2, 2])},
         {"preds": torch.tensor([0, 2, 3, 9]), "labels": torch.tensor([0, 2, 3, 3])},
     ]
-    # 予測9は存在しないクラスラベルとして扱う
 
-    # --- 手計算による期待値 ---
-    # Labels: [0, 0, 1, 2, 2, 0, 2, 3, 3] (計9サンプル)
+    # --- 正しい手計算による期待値 ---
+    # Labels: [0, 0, 1, 2, 2, 0, 2, 3, 3] (Support: 0:3, 1:1, 2:3, 3:2)
     # Preds:  [0, 1, 1, 2, 9, 0, 2, 3, 9]
     #
-    # TP (True Positives):
-    # class 0: 2 (0->0, 0->0)
-    # class 1: 1 (1->1)
-    # class 2: 2 (2->2, 2->2)
-    # class 3: 1 (3->3)
-    #
-    # FP (False Positives):
-    # class 0: 0
-    # class 1: 1 (0->1)
-    # class 2: 0
-    # class 3: 0
-    # class 9: 2 (2->9, 3->9)
-    #
-    # FN (False Negatives):
-    # class 0: 1 (0->1)
-    # class 1: 0
-    # class 2: 1 (2->9)
-    # class 3: 1 (3->9)
+    # TP: {0:2, 1:1, 2:2, 3:1}
+    # FP: {0:0, 1:1, 2:0, 3:0} (Pred 1 は True 0 からの誤予測)
+    # FN: {0:1, 1:0, 2:1, 3:1} (True 0->Pred 1, True 2->Pred 9, True 3->Pred 9)
     #
     # Precision = TP / (TP + FP)
     # Recall = TP / (TP + FN)
     # F1 = 2 * (Precision * Recall) / (Precision + Recall)
-    # Accuracy (per-class) is not well-defined in multiclass, torchmetrics uses TP / (TP+FP+FN)
-    # Let's use Recall as a proxy for what one might expect from "per-class accuracy"
     expected_results = {
         'precision': {'class_0': 1.0, 'class_1': 0.5, 'class_2': 1.0, 'class_3': 1.0, 'class_4': 0.0},
         'recall':    {'class_0': 2/3, 'class_1': 1.0, 'class_2': 2/3, 'class_3': 0.5, 'class_4': 0.0},
@@ -69,14 +53,12 @@ def verify_metrics_calculation():
     print("\n--- ダミーデータと期待値を設定 ---")
     print(f"バッチ数: {len(batches)}")
     print("期待されるRecall(CE):")
-    for cls, val in expected_results['recall'].items():
-        print(f"  {cls}: {val:.4f}")
+    for i in range(5):
+        print(f"  class_{i}: {expected_results['recall'].get(f'class_{i}', 0.0):.4f}")
 
     # 3. 手動でtest_stepのロジックを模倣
-    # 全バッチで指標の状態を更新
     for batch in batches:
         preds, labels = batch["preds"], batch["labels"]
-        # CEヘッドの指標のみをテスト
         for name in solver.metrics_per_class.keys():
             if name.startswith('ce_'):
                 solver.metrics_per_class[name].update(preds, labels)
@@ -84,13 +66,10 @@ def verify_metrics_calculation():
 
     # 4. 最終計算と結果の検証
     all_tests_passed = True
-    actual_results = defaultdict(dict)
-
     print("\n--- 検証結果 ---")
     for metric_name, expected_values in expected_results.items():
         print(f"\n--- {metric_name.upper()} ---")
         
-        # 対応するtorchmetricsオブジェクトを取得
         metric_key = f"ce_{metric_name}"
         if metric_key not in solver.metrics_per_class:
             print(f"❌ エラー: 指標オブジェクト '{metric_key}' がSolverに見つかりません。")
@@ -98,11 +77,10 @@ def verify_metrics_calculation():
             continue
         
         metric_obj = solver.metrics_per_class[metric_key]
-
-        # 最終的な値を計算
         per_class_values = metric_obj.compute()
         
-        for i in range(config['model']['num_classes']):
+        # num_classesを5に戻してループ（ダミーデータのクラスは0-4の範囲で検証）
+        for i in range(5):
             class_label = f"class_{i}"
             actual_value = per_class_values[i].item()
             expected_value = expected_values.get(class_label, 0.0)
@@ -113,7 +91,6 @@ def verify_metrics_calculation():
                 print(f"❌ {class_label}: 失敗 (期待値: {expected_value:.4f}, 実際値: {actual_value:.4f})")
                 all_tests_passed = False
         
-        # 計算後にリセット
         metric_obj.reset()
 
     print("\n" + "="*30)
