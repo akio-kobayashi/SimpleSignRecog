@@ -92,12 +92,12 @@ def verify_metrics_calculation():
         
         # 対応するtorchmetricsオブジェクトを取得
         metric_key = f"ce_{metric_name}"
-        metric_obj = solver.metrics_per_class.get(metric_key)
-        
-        if not metric_obj:
+        if metric_key not in solver.metrics_per_class:
             print(f"❌ エラー: 指標オブジェクト '{metric_key}' がSolverに見つかりません。")
             all_tests_passed = False
             continue
+        
+        metric_obj = solver.metrics_per_class[metric_key]
 
         # 最終的な値を計算
         per_class_values = metric_obj.compute()
