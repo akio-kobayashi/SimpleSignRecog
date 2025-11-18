@@ -53,37 +53,12 @@ class Solver(pl.LightningModule):
         if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
             self.ce_criterion = nn.CrossEntropyLoss()
 
-        # --- 評価指標のセットアップ ---
+        # --- 評価指標のセットアップ (validation_stepでのプログレスバー表示用) ---
         average_mode = self.config['trainer']['metrics_average_mode']
         num_classes = self.config['model']['num_classes']
-        
-        metric_collection = {
-            "acc": MulticlassAccuracy,
-            "precision": MulticlassPrecision,
-            "recall": MulticlassRecall,
-            "f1": MulticlassF1Score,
-        }
-
-        self.metrics_overall = nn.ModuleDict()
-        self.metrics_per_class = nn.ModuleDict()
-
-        for name, metric_cls in metric_collection.items():
-            # 全体指標用のキー (例: "ctc_acc")
-            overall_key = f"ctc_{name}"
-            self.metrics_overall[overall_key] = metric_cls(num_classes=num_classes, average=average_mode)
-            
-            # クラスごと指標用のキー (例: "ctc_acc")
-            per_class_key = f"ctc_{name}"
-            self.metrics_per_class[per_class_key] = metric_cls(num_classes=num_classes, average=None)
-
+        self.ctc_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
         if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
-            for name, metric_cls in metric_collection.items():
-                overall_key = f"ce_{name}"
-                self.metrics_overall[overall_key] = metric_cls(num_classes=num_classes, average=average_mode)
-                
-                per_class_key = f"ce_{name}"
-                self.metrics_per_class[per_class_key] = metric_cls(num_classes=num_classes, average=None)
-            self.ce_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
+            self.ce_acc = MulticlassAccuracy(num_classes=num_classes, average=average_mode)
 
         # --- CTCデコーダーのセットアップ ---
         self.decode_method = self.config['trainer'].get('decode_method', 'majority_vote')
@@ -96,6 +71,7 @@ class Solver(pl.LightningModule):
                 print("WARN: 'pyctcdecode' is not installed. Beam search decoding will not be available.")
                 self.decode_method = 'majority_vote'
 
+        # --- テスト結果（生データ）を保持するリスト ---
         self.test_labels_for_report = []
         self.test_preds_for_report = []
 
@@ -196,53 +172,34 @@ class Solver(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
         
+        # 予測ラベルを計算
         ctc_preds = self._calculate_ctc_preds(ctc_log_probs, labels)
         
-        for name in self.metrics_overall.keys():
-            if name.startswith('ctc_'):
-                self.metrics_overall[name].update(ctc_preds, labels)
-                self.metrics_per_class[name].update(ctc_preds, labels)
-
         is_dual_head = isinstance(self.model, (STGCNModel, TwoStreamCNN))
         if is_dual_head and aux_logits is not None:
             ce_preds = self._calculate_ce_preds(aux_logits)
-            for name in self.metrics_overall.keys():
-                if name.startswith('ce_'):
-                    self.metrics_overall[name].update(ce_preds, labels)
-                    self.metrics_per_class[name].update(ce_preds, labels)
         else:
             ce_preds = None
 
+        # classification_report用のラベルを収集
         if self.report_target == 'ce' and ce_preds is not None:
             self.test_preds_for_report.append(ce_preds.cpu())
         else:
             self.test_preds_for_report.append(ctc_preds.cpu())
         self.test_labels_for_report.append(labels.cpu())
         
-        self.log('test_loss', loss, on_step=False, on_epoch=True)
-        self.log('test_loss_ctc', loss_ctc, on_step=False, on_epoch=True)
-        if is_dual_head and aux_logits is not None:
-            self.log('test_loss_ce', loss_ce, on_step=False, on_epoch=True)
-        
         return loss
 
     def on_test_epoch_end(self):
+        # 生の予測結果と正解ラベルを最終的なプロパティとして設定
         if self.test_preds_for_report:
             self.test_preds = torch.cat(self.test_preds_for_report)
         if self.test_labels_for_report:
             self.test_labels = torch.cat(self.test_labels_for_report)
+        
+        # メモリを解放
         self.test_preds_for_report.clear()
         self.test_labels_for_report.clear()
-
-        for name, metric_obj in self.metrics_overall.items():
-            self.log(f"test_{name}", metric_obj.compute(), on_epoch=True)
-            metric_obj.reset()
-
-        for name, metric_per_class_obj in self.metrics_per_class.items():
-            per_class_values = metric_per_class_obj.compute()
-            for i, value in enumerate(per_class_values):
-                self.log(f"test_{name}_class_{i}", value, on_epoch=True)
-            metric_per_class_obj.reset()
 
     def configure_optimizers(self):
         optimizer_config = self.config['optimizer']

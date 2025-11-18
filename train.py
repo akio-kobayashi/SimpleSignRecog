@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 from pytorch_lightning.callbacks import EarlyStopping
 from sklearn.model_selection import StratifiedKFold, train_test_split, LeaveOneOut
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, confusion_matrix
 from torch.utils.data import DataLoader
 
 # 自作のモジュールをインポートします
@@ -257,188 +257,48 @@ def main(config: dict, checkpoint_path: str | None = None):
         model.posteriogram_dir = Path(trainer.log_dir) / "posteriograms"
 
         # 最良のモデル（val_lossが最小）を使ってテストを実行
-        test_results = trainer.test(model, dataloaders=test_loader, ckpt_path='best')
-        all_fold_metrics.append(test_results[0])
+        trainer.test(model, dataloaders=test_loader, ckpt_path='best')
 
-        # WERの結果を収集
+        # --- 2e. このフォールドの混同行列を計算・保存 ---
+        y_true = model.test_labels.cpu().numpy()
+        y_pred = model.test_preds.cpu().numpy()
+        
+        # 混同行列を計算
+        num_classes = config['model']['num_classes']
+        cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
+        
+        # 出力先ディレクトリをconfigから取得
+        output_dir = Path(config.get("output", {}).get("cm_output_dir", "results/confusion_matrices_cv"))
+        output_dir.mkdir(exist_ok=True, parents=True)
+        fold_results_path = output_dir / f"fold_{fold}_cm.csv"
+
+        # 混同行列をCSVとして保存
+        pd.DataFrame(cm).to_csv(fold_results_path, index=False, header=False)
+        print(f"混同行列を保存しました: {fold_results_path}")
+
+        # WERの結果を収集 (これはSolver内で計算されるため、ここで収集)
         if hasattr(model, 'wer_results') and not model.wer_results.empty:
             # fold番号を追加
             model.wer_results['fold'] = fold + 1
             all_fold_wer_results.append(model.wer_results)
 
-        # --- 2e. CV戦略に基づいた結果の収集 ---
-        y_true = model.test_labels.cpu().numpy() # 正解ラベル
-        y_pred = model.test_preds.cpu().numpy() # 予測ラベル
 
-        if not is_loocv:
-            # k-foldの場合、各分割のレポートを生成・保存
-            if class_mapping:
-                class_mapping_int_keys = {int(k): v for k, v in class_mapping.items()}
-                target_names = [class_mapping_int_keys.get(i, str(i)) for i in range(config['model']['num_classes'])]
-            else:
-                target_names = [str(i) for i in range(config['model']['num_classes'])]
+    # --- 3. 完了メッセージ ---
+    print("\n===== 全てのフォールドの学習とテストが完了しました =====")
+    cm_output_dir = Path(config.get("output", {}).get("cm_output_dir", "results/confusion_matrices_cv"))
+    print(f"各フォールドの混同行列が '{cm_output_dir}' に保存されました。")
+    print("\n次のステップ:")
+    print(f"python aggregate_results.py {cm_output_dir} --config {args.config}")
+    print("上記のコマンドを実行して、最終的な統計レポートと指標を生成してください。")
 
-            report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
-            report_df = pd.DataFrame(report).transpose()
-            report_df['fold'] = fold + 1
-            all_fold_reports.append(report_df)
-            print(f"分割 {fold + 1} の詳細レポートを生成しました。")
-        else:
-            # LOOCVの場合、ラベルと予測を収集するだけ
-            all_labels.extend(y_true)
-            all_preds.extend(y_pred)
-            print(f"分割 {fold + 1} の予測結果を収集しました。")
-
-
-    # --- 3. 最終結果の集計、保存、表示 ---
-    print("\n===== 交差検証の最終結果 ======")
-    output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
-    output_dir.mkdir(exist_ok=True, parents=True)
-
-    # --- 3a. グラフ描画用の統計量（平均・標準偏差）を計算・保存 ---
-    if all_fold_metrics:
-        metrics_df = pd.DataFrame(all_fold_metrics)
-        
-        # 各指標の平均と標準偏差を計算
-        stats = {
-            'mean': metrics_df.mean(),
-            'std': metrics_df.std()
-        }
-        stats_df = pd.DataFrame(stats)
-        
-        # データを縦長形式に変形
-        stats_df = stats_df.reset_index().rename(columns={'index': 'metric_name'})
-        
-        # メトリック名からクラスを分離
-        def get_class_label(metric_name):
-            parts = metric_name.split('_')
-            if parts[-1].isdigit():
-                return f"class_{parts[-1]}"
-            return "overall"
-        
-        stats_df['class_label'] = stats_df['metric_name'].apply(get_class_label)
-        stats_df['metric'] = stats_df['metric_name'].apply(lambda x: x.rsplit('_', 1)[0] if x.split('_')[-1].isdigit() else x)
-        
-        # 必要な列を選択・リネーム
-        final_stats_df = stats_df[['metric', 'class_label', 'mean', 'std']]
-        
-        # CSVに保存
-        stats_output_path = config.get("output", {}).get("cv_stats_path", "results_cv_stats.csv")
-        final_stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
-        print(f"\nグラフ描画用の統計量を保存しました: {stats_output_path}")
-        print(final_stats_df)
-
-    if not is_loocv:
-        # --- k-fold: 分割レポートを集計し、平均を計算 ---
-        if not all_fold_reports:
-            print("レポートを生成するためのテスト結果がありません。")
-            return
-
-        full_report_df = pd.concat(all_fold_reports)
-        
-        # 数値列のみを対象に平均を計算
-        numeric_cols = full_report_df.select_dtypes(include=np.number).columns.tolist()
-        numeric_cols.remove('fold')
-        mean_report_df = full_report_df[~full_report_df.index.isin(['accuracy', 'macro avg', 'weighted avg'])].groupby(full_report_df.index)[numeric_cols].mean()
-        
-        # accuracy, macro avg, weighted avgの行を計算して追加
-        mean_report_df.loc['accuracy', 'support'] = full_report_df[full_report_df.index == 'accuracy']['support'].sum() / num_folds
-        mean_report_df.loc['macro avg'] = mean_report_df.mean()
-        mean_report_df.loc['weighted avg'] = np.average(mean_report_df.iloc[:-2], weights=mean_report_df['support'].iloc[:-2], axis=0)
-        mean_report_df.loc['accuracy', list(mean_report_df.columns.drop('support'))] = np.nan
-
-        mean_report_df['fold'] = 'mean'
-        
-        final_report_with_avg = pd.concat([full_report_df, mean_report_df.reset_index()])
-        
-        # 詳細レポートをCSVに保存
-        csv_path = output_dir / "cross_validation_detailed_report.csv"
-        final_report_with_avg.to_csv(csv_path, float_format='%.4f')
-        print(f"\n詳細なk-fold交差検証レポートを保存しました: {csv_path}")
-
-        # 主要な評価指標の平均値を表示
-        avg_metrics = pd.DataFrame(all_fold_metrics).mean().to_dict()
-        print(f"\n--- {num_folds} 分割の平均評価指標 ---")
-        print(f"平均テスト正解率: {avg_metrics.get('test_acc_epoch', 0):.4f}")
-        print(f"平均テストF1スコア: {avg_metrics.get('test_f1_epoch', 0):.4f}")
-        print(f"平均テスト適合率: {avg_metrics.get('test_precision_epoch', 0):.4f}")
-        print(f"平均テスト再現率: {avg_metrics.get('test_recall_epoch', 0):.4f}")
-
-    else:
-        # --- LOOCV: 全ての予測から単一のレポートを生成 ---
-        if not all_labels:
-            print("レポートを生成するためのテスト結果がありません。")
-            return
-
-        y_true = np.array(all_labels)
-        y_pred = np.array(all_preds)
-
-        if class_mapping:
-            class_mapping_int_keys = {int(k): v for k, v in class_mapping.items()}
-            target_names = [class_mapping_int_keys.get(i, str(i)) for i in range(config['model']['num_classes'])]
-        else:
-            target_names = [str(i) for i in range(config['model']['num_classes'])]
-
-        report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
-        final_report_df = pd.DataFrame(report).transpose()
-
-        # レポートをCSVに保存
-        csv_path = output_dir / "leave_one_out_report.csv"
-        final_report_df.to_csv(csv_path, float_format='%.4f')
-        print(f"\nLeave-One-Outの総合レポートを保存しました: {csv_path}")
-
-        print(f"\n--- Leave-One-Outの総合評価指標 ---")
-        accuracy_series = final_report_df.loc['accuracy']
-        accuracy = accuracy_series['support']
-        macro_avg = final_report_df.loc['macro avg']
-        
-        print(f"総合テスト正解率: {accuracy:.4f}")
-        print(f"総合テストF1スコア (Macro): {macro_avg['f1-score']:.4f}")
-        print(f"総合テスト適合率 (Macro): {macro_avg['precision']:.4f}")
-        print(f"総合テスト再現率 (Macro): {macro_avg['recall']:.4f}")
-
-    print("\n各分割の個別のメトリクスとチェックポイントは、それぞれの 'fold_X' ディレクトリに記録されています。")
-
-    # WERの結果を集計し、CSVに保存
+    # WERの結果が収集されていれば、ここで集計・保存する
     if all_fold_wer_results:
+        output_dir = Path(config["logger"]["save_dir"]) / config["logger"]["name"] / "cv_results"
+        output_dir.mkdir(exist_ok=True, parents=True)
         full_wer_df = pd.concat(all_fold_wer_results, ignore_index=True)
-        
-        # 各foldの平均WERを計算
-        mean_wer_per_fold = full_wer_df.groupby('fold')['wer'].mean().reset_index()
-        mean_wer_per_fold.rename(columns={'wer': 'mean_wer_per_sample'}, inplace=True)
-        
-        # 全体の平均WERを計算
-        overall_mean_wer = full_wer_df['wer'].mean()
-        
-        # 全体の合計エラー数と単語数を計算
-        total_sub = full_wer_df['substitutions'].sum()
-        total_del = full_wer_df['deletions'].sum()
-        total_ins = full_wer_df['insertions'].sum()
-        total_words = full_wer_df['num_words'].sum()
-        
-        # 全体でのWERを再計算 (各サンプルのWERの平均ではなく、総エラー数/総単語数)
-        overall_wer_from_totals = (total_sub + total_del + total_ins) / total_words if total_words > 0 else 0.0
-
-        print(f"\n--- WER (Word Error Rate) 結果 ---")
-        print(f"各サンプルの平均WER (全fold): {overall_mean_wer:.4f}")
-        print(f"総エラー数に基づくWER (全fold): {overall_wer_from_totals:.4f}")
-        print(f"  置換 (Substitutions): {int(total_sub)}")
-        print(f"  削除 (Deletions): {int(total_del)}")
-        print(f"  挿入 (Insertions): {int(total_ins)}")
-        print(f"  総単語数 (Total Words): {int(total_words)}")
-
-        # 詳細なWER結果をCSVに保存
         wer_csv_path = output_dir / "cross_validation_wer_detailed.csv"
         full_wer_df.to_csv(wer_csv_path, index=False, float_format='%.4f')
-        print(f"詳細なWER結果を保存しました: {wer_csv_path}")
-
-        # 各foldの平均WERをCSVに保存
-        mean_wer_csv_path = output_dir / "cross_validation_wer_summary_per_fold.csv"
-        mean_wer_per_fold.to_csv(mean_wer_csv_path, index=False, float_format='%.4f')
-        print(f"各foldの平均WERを保存しました: {mean_wer_csv_path}")
-    else:
-        print("\n--- WER (Word Error Rate) 結果 ---")
-        print("WERの結果は収集されませんでした (decode_methodがgreedyまたはbeam_searchではありません)。")
+        print(f"\n詳細なWER結果を保存しました: {wer_csv_path}")
 
 
 # このスクリプトが直接実行された場合にのみ以下のコードが実行されます

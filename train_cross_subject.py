@@ -7,6 +7,7 @@ from torch.utils.data import Dataset, DataLoader, random_split, ConcatDataset
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, EarlyStopping
+from sklearn.metrics import confusion_matrix
 from pathlib import Path
 from collections import defaultdict
 import os
@@ -127,45 +128,32 @@ def main(args):
 
         # --- 学習 & テスト ---
         trainer.fit(solver, train_dataloaders=train_loader, val_dataloaders=val_loader)
-        test_results = trainer.test(dataloaders=test_loader, ckpt_path='best')
+        trainer.test(dataloaders=test_loader, ckpt_path='best')
         
-        # --- メトリクスの収集 ---
-        # test_results[0] には {'test_loss': ..., 'test_acc_ctc': ...} のような辞書が入っている
-        results_dict = test_results[0]
-        for key, value in results_dict.items():
-            fold_metrics[key].append(value)
+        # --- このフォールドの混同行列を計算・保存 ---
+        y_true = solver.test_labels.cpu().numpy()
+        y_pred = solver.test_preds.cpu().numpy()
 
-    # --- 全フォールドのメトリクスを集計 ---
-    stats_rows = []
-    num_classes = config['model']['num_classes']
-    
-    # torchmetricsが出力するメトリクス名に合わせて集計
-    # 例: 'test_acc_ctc', 'test_f1_macro', 'test_precision_macro' など
-    for metric_name, values in fold_metrics.items():
-        mean = np.mean(values)
-        std = np.std(values)
+        # 混同行列を計算
+        num_classes = config['model']['num_classes']
+        cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
         
-        # メトリック名から指標とクラスを分離 (例: test_acc_ctc_class_5 -> (test_acc_ctc, 5))
-        parts = metric_name.split('_')
-        class_label = f"class_{parts[-1]}" if parts[-1].isdigit() else "overall"
-        base_metric_name = "_".join(parts[:-1]) if class_label != "overall" else metric_name
+        # 出力先ディレクトリをconfigから取得
+        output_dir = Path(cs_config.get("cm_output_dir", "results/confusion_matrices_cs"))
+        output_dir.mkdir(exist_ok=True, parents=True)
+        fold_results_path = output_dir / f"cs_fold_{i}_cm.csv"
 
-        stats_rows.append({
-            "metric": base_metric_name,
-            "class_label": class_label,
-            "mean": mean,
-            "std": std
-        })
+        # 混同行列をCSVとして保存
+        pd.DataFrame(cm).to_csv(fold_results_path, index=False, header=False)
+        print(f"混同行列を保存しました: {fold_results_path}")
 
-    stats_df = pd.DataFrame(stats_rows)
-    
-    # --- 結果の保存 ---
-    output_path = cs_config.get("output_stats_path", "results_cross_subject_stats.csv")
-    stats_df.to_csv(output_path, index=False)
-
-    print(f"\n--- Aggregated Cross-Subject Validation Stats ---")
-    print(stats_df)
-    print(f"\nStatistics saved to {output_path}")
+    # --- 全てのフォールドが完了 ---
+    print("\n===== 全てのフォールドの学習とテストが完了しました =====")
+    cm_output_dir = Path(cs_config.get("cm_output_dir", "results/confusion_matrices_cs"))
+    print(f"各フォールドの混同行列が '{cm_output_dir}' に保存されました。")
+    print("\n次のステップ:")
+    print(f"python aggregate_results.py {cm_output_dir} --config {args.config}")
+    print("上記のコマンドを実行して、最終的な統計レポートと指標を生成してください。")
 
 
 if __name__ == '__main__':
