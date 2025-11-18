@@ -156,7 +156,8 @@ class Solver(pl.LightningModule):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
         
         ctc_preds = self._calculate_ctc_preds(ctc_log_probs, labels)
-        acc_ctc = self.metrics_overall['ctc_acc'](ctc_preds, labels)
+        # validation_stepではプログレスバー表示用に、__init__で定義された全体指標のみを使用
+        acc_ctc = self.ctc_acc(ctc_preds, labels)
         
         self.log('val_loss', loss, prog_bar=True)
         self.log('val_acc_ctc', acc_ctc, prog_bar=True)
@@ -164,7 +165,7 @@ class Solver(pl.LightningModule):
 
         if isinstance(self.model, (STGCNModel, TwoStreamCNN)) and aux_logits is not None:
             ce_preds = self._calculate_ce_preds(aux_logits)
-            acc_ce = self.metrics_overall['ce_acc'](ce_preds, labels)
+            acc_ce = self.ce_acc(ce_preds, labels)
             self.log('val_acc_ce', acc_ce, prog_bar=True)
             self.log('val_loss_ce', loss_ce)
         return loss
