@@ -55,23 +55,34 @@ class Solver(pl.LightningModule):
 
         # --- 評価指標のセットアップ ---
         average_mode = self.config['trainer']['metrics_average_mode']
-        metrics = {
+        num_classes = self.config['model']['num_classes']
+        
+        metric_collection = {
             "acc": MulticlassAccuracy,
             "precision": MulticlassPrecision,
             "recall": MulticlassRecall,
             "f1": MulticlassF1Score,
         }
 
-        # CTC Head Metrics
-        for name, metric_cls in metrics.items():
-            setattr(self, f"ctc_{name}", metric_cls(num_classes=num_classes, average=average_mode))
-            setattr(self, f"ctc_{name}_per_class", metric_cls(num_classes=num_classes, average=None))
+        self.metrics_overall = nn.ModuleDict()
+        self.metrics_per_class = nn.ModuleDict()
 
-        # CE Head Metrics (if applicable)
+        for name, metric_cls in metric_collection.items():
+            # 全体指標用のキー (例: "ctc_acc")
+            overall_key = f"ctc_{name}"
+            self.metrics_overall[overall_key] = metric_cls(num_classes=num_classes, average=average_mode)
+            
+            # クラスごと指標用のキー (例: "ctc_acc")
+            per_class_key = f"ctc_{name}"
+            self.metrics_per_class[per_class_key] = metric_cls(num_classes=num_classes, average=None)
+
         if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
-            for name, metric_cls in metrics.items():
-                setattr(self, f"ce_{name}", metric_cls(num_classes=num_classes, average=average_mode))
-                setattr(self, f"ce_{name}_per_class", metric_cls(num_classes=num_classes, average=None))
+            for name, metric_cls in metric_collection.items():
+                overall_key = f"ce_{name}"
+                self.metrics_overall[overall_key] = metric_cls(num_classes=num_classes, average=average_mode)
+                
+                per_class_key = f"ce_{name}"
+                self.metrics_per_class[per_class_key] = metric_cls(num_classes=num_classes, average=None)
             self.ce_acc_per_class = MulticlassAccuracy(num_classes=num_classes, average=None)
 
         # --- CTCデコーダーのセットアップ ---
@@ -169,7 +180,7 @@ class Solver(pl.LightningModule):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
         
         ctc_preds = self._calculate_ctc_preds(ctc_log_probs, labels)
-        acc_ctc = self.ctc_acc(ctc_preds, labels) # For logging progress
+        acc_ctc = self.metrics_overall['ctc_acc'](ctc_preds, labels)
         
         self.log('val_loss', loss, prog_bar=True)
         self.log('val_acc_ctc', acc_ctc, prog_bar=True)
@@ -177,7 +188,7 @@ class Solver(pl.LightningModule):
 
         if isinstance(self.model, (STGCNModel, TwoStreamCNN)) and aux_logits is not None:
             ce_preds = self._calculate_ce_preds(aux_logits)
-            acc_ce = self.ce_acc(ce_preds, labels) # For logging progress
+            acc_ce = self.metrics_overall['ce_acc'](ce_preds, labels)
             self.log('val_acc_ce', acc_ce, prog_bar=True)
             self.log('val_loss_ce', loss_ce)
         return loss
@@ -185,34 +196,29 @@ class Solver(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         loss, loss_ctc, loss_ce, ctc_log_probs, aux_logits, labels = self._shared_step(batch)
         
-        # --- 予測ラベルの計算 ---
         ctc_preds = self._calculate_ctc_preds(ctc_log_probs, labels)
+        
+        for name in self.metrics_overall.keys():
+            if name.startswith('ctc_'):
+                self.metrics_overall[name].update(ctc_preds, labels)
+                self.metrics_per_class[name].update(ctc_preds, labels)
 
-        # --- CTC Headの指標を更新 ---
-        metric_names = ["acc", "precision", "recall", "f1"]
-        for name in metric_names:
-            getattr(self, f"ctc_{name}").update(ctc_preds, labels)
-            getattr(self, f"ctc_{name}_per_class").update(ctc_preds, labels)
-
-        # --- CE Headの指標を更新 ---
         is_dual_head = isinstance(self.model, (STGCNModel, TwoStreamCNN))
         if is_dual_head and aux_logits is not None:
             ce_preds = self._calculate_ce_preds(aux_logits)
-            for name in metric_names:
-                getattr(self, f"ce_{name}").update(ce_preds, labels)
-                getattr(self, f"ce_{name}_per_class").update(ce_preds, labels)
+            for name in self.metrics_overall.keys():
+                if name.startswith('ce_'):
+                    self.metrics_overall[name].update(ce_preds, labels)
+                    self.metrics_per_class[name].update(ce_preds, labels)
         else:
             ce_preds = None
 
-        # --- classification_report用のラベルを収集 ---
         if self.report_target == 'ce' and ce_preds is not None:
             self.test_preds_for_report.append(ce_preds.cpu())
         else:
             self.test_preds_for_report.append(ctc_preds.cpu())
-            
         self.test_labels_for_report.append(labels.cpu())
         
-        # --- 損失のみをログに記録 ---
         self.log('test_loss', loss, on_step=False, on_epoch=True)
         self.log('test_loss_ctc', loss_ctc, on_step=False, on_epoch=True)
         if is_dual_head and aux_logits is not None:
@@ -221,7 +227,6 @@ class Solver(pl.LightningModule):
         return loss
 
     def on_test_epoch_end(self):
-        # --- classification_report用のラベルを準備 ---
         if self.test_preds_for_report:
             self.test_preds = torch.cat(self.test_preds_for_report)
         if self.test_labels_for_report:
@@ -229,37 +234,15 @@ class Solver(pl.LightningModule):
         self.test_preds_for_report.clear()
         self.test_labels_for_report.clear()
 
-        # --- 全体およびクラスごとの指標を計算・ログ記録 ---
-        metric_names = ["acc", "precision", "recall", "f1"]
-        
-        # CTC Head
-        for name in metric_names:
-            # 全体指標
-            metric_obj = getattr(self, f"ctc_{name}")
-            self.log(f"test_{name}_ctc", metric_obj.compute(), on_epoch=True)
+        for name, metric_obj in self.metrics_overall.items():
+            self.log(f"test_{name}", metric_obj.compute(), on_epoch=True)
             metric_obj.reset()
-            
-            # クラスごと指標
-            metric_per_class_obj = getattr(self, f"ctc_{name}_per_class")
+
+        for name, metric_per_class_obj in self.metrics_per_class.items():
             per_class_values = metric_per_class_obj.compute()
             for i, value in enumerate(per_class_values):
-                self.log(f"test_{name}_ctc_class_{i}", value, on_epoch=True)
+                self.log(f"test_{name}_class_{i}", value, on_epoch=True)
             metric_per_class_obj.reset()
-
-        # CE Head
-        if isinstance(self.model, (STGCNModel, TwoStreamCNN)):
-            for name in metric_names:
-                # 全体指標
-                metric_obj = getattr(self, f"ce_{name}")
-                self.log(f"test_{name}_ce", metric_obj.compute(), on_epoch=True)
-                metric_obj.reset()
-
-                # クラスごと指標
-                metric_per_class_obj = getattr(self, f"ce_{name}_per_class")
-                per_class_values = metric_per_class_obj.compute()
-                for i, value in enumerate(per_class_values):
-                    self.log(f"test_{name}_ce_class_{i}", value, on_epoch=True)
-                metric_per_class_obj.reset()
 
     def configure_optimizers(self):
         optimizer_config = self.config['optimizer']
