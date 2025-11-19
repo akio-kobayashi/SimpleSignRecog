@@ -54,6 +54,27 @@ def collate_fn(batch):
     lengths = torch.stack(lengths)
     return padded_features, lengths, labels
 
+def get_feature_dim(feature_config: dict) -> int:
+    """
+    config.yamlのfeaturesセクションに基づいて、特徴量の次元数を計算する関数。
+    """
+    BASE_COORD_DIM = 21 * 3 * 2
+    EXISTING_PIPELINE_DIM = 193 * 2
+    normalize_mode = feature_config.get('normalize_mode', 'normalize_landmarks')
+    paper_conf = feature_config.get('paper_features', {})
+    use_paper_speed = paper_conf.get('speed', False)
+    use_paper_anthropometric = paper_conf.get('anthropometric', False)
+    is_paper_mode = normalize_mode in ['current_wrist', 'first_wrist'] or use_paper_speed or use_paper_anthropometric
+    if is_paper_mode:
+        dim = BASE_COORD_DIM
+        if use_paper_speed:
+            dim += BASE_COORD_DIM
+        if use_paper_anthropometric:
+            dim += 210 * 2
+        return dim
+    else:
+        return EXISTING_PIPELINE_DIM
+
 def main(args):
     """
     メインの学習・評価処理。
@@ -62,6 +83,11 @@ def main(args):
         config = yaml.safe_load(f)
 
     pl.seed_everything(config.get('seed', 42))
+
+    # configに基づいて特徴量の次元数を計算し、config辞書を更新
+    feature_dim = get_feature_dim(config.get('features', {}))
+    config['model']['input_dim'] = feature_dim
+    print(f"--- configに基づき、特徴量の次元数を {feature_dim} と計算しました ---")
 
     cs_config = config.get('cross_subject')
     if not cs_config or 'subjects' not in cs_config:
