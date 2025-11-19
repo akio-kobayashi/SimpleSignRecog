@@ -135,12 +135,8 @@ def main(args):
         trainer_config.pop("beam_width", None)
 
         trainer = pl.Trainer(
-            max_epochs=config['trainer']['max_epochs'],
-            accelerator=config['trainer']['accelerator'],
             logger=logger,
             callbacks=callbacks,
-            log_every_n_steps=config['trainer']['log_every_n_steps'],
-            enable_progress_bar=True,
             **trainer_config
         )
 
