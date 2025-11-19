@@ -1,5 +1,3 @@
-
-
 import argparse
 import yaml
 import pandas as pd
@@ -12,15 +10,11 @@ from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, EarlyS
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
 from pathlib import Path
-from collections import defaultdict
 import os
 import copy
 
-# ---------------------------------
-# train.pyと完全に同じデータセット処理をインポート
-from src.dataset import SignDataset, BucketBatchSampler, data_processing
+from src.dataset import SignDataset, data_processing
 from src.solver import Solver
-# ---------------------------------
 
 def get_feature_dim(feature_config: dict) -> int:
     """
@@ -52,7 +46,6 @@ def main(args):
 
     pl.seed_everything(config.get('seed', 42))
 
-    # configに基づいて特徴量の次元数を計算し、config辞書を更新
     feature_dim = get_feature_dim(config.get('features', {}))
     config['model']['input_dim'] = feature_dim
     print(f"--- configに基づき、特徴量の次元数を {feature_dim} と計算しました ---")
@@ -61,58 +54,66 @@ def main(args):
     if not cs_config or 'subjects' not in cs_config:
         raise ValueError("`cross_subject.subjects` section not found in config file.")
 
-    # --- 全話者のデータセットを事前にロード ---
-    # メタデータのみを先に読み込む
-    all_subject_metadata = [
-        pd.read_csv(s['metadata_path']) for s in cs_config['subjects']
+    # --- 全話者の情報（メタデータDFとベースディレクトリ）を事前にロード ---
+    all_subject_info = [
+        {
+            "df": pd.read_csv(s['metadata_path']),
+            "base_dir": s['source_landmark_dir']
+        }
+        for s in cs_config['subjects']
     ]
     
-    num_folds = len(all_subject_metadata)
+    num_folds = len(all_subject_info)
 
     # --- 交差検証ループ ---
     for i in range(num_folds):
         print(f"\n{'='*20} FOLD {i+1}/{num_folds} {'='*20}")
         
         # --- データセットの準備 ---
-        test_df = all_subject_metadata[i]
-        train_val_dfs = [df for j, df in enumerate(all_subject_metadata) if i != j]
-        train_val_df = pd.concat(train_val_dfs, ignore_index=True)
+        test_info = all_subject_info[i]
+        train_val_info_list = [info for j, info in enumerate(all_subject_info) if i != j]
 
-        # 訓練・検証データをさらに訓練用と検証用に分割
-        train_df, val_df = train_test_split(
-            train_val_df,
-            test_size=config['data']['validation_split_ratio'],
-            random_state=config.get('seed', 42),
-            stratify=train_val_df['class_label']
-        )
-        
-        # --- データセットとデータローダーの作成 (train.pyと共通化) ---
+        # 評価用config（データ拡張なし）
         eval_config = copy.deepcopy(config)
         eval_config['data']['augmentation'] = {}
 
-        train_dataset = SignDataset(
-            metadata_df=train_df,
-            data_base_dir=cs_config['subjects'][0]['source_landmark_dir'], # base_dirは共通と仮定
-            config=config
-        )
-        val_dataset = SignDataset(
-            metadata_df=val_df,
-            data_base_dir=cs_config['subjects'][0]['source_landmark_dir'],
-            config=eval_config
-        )
+        # テストデータセットを作成
         test_dataset = SignDataset(
-            metadata_df=test_df,
-            data_base_dir=cs_config['subjects'][0]['source_landmark_dir'],
+            metadata_df=test_info['df'],
+            data_base_dir=test_info['base_dir'],
             config=eval_config
         )
 
-        train_loader = DataLoader(train_dataset, batch_size=config['data']['batch_size'], shuffle=True, collate_fn=data_processing, num_workers=os.cpu_count())
-        val_loader = DataLoader(val_dataset, batch_size=config['data']['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=os.cpu_count())
-        test_loader = DataLoader(test_dataset, batch_size=config['data']['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=os.cpu_count())
+        # 訓練・検証用のデータセットリストを作成
+        train_val_datasets = [
+            SignDataset(
+                metadata_df=info['df'],
+                data_base_dir=info['base_dir'],
+                config=config # 訓練用なのでデータ拡張あり
+            ) for info in train_val_info_list
+        ]
+        train_val_dataset = ConcatDataset(train_val_datasets)
+
+        # 訓練・検証データセットを分割
+        # StratifyがConcatDatasetで直接使えないため、インデックスで分割
+        train_val_indices = np.arange(len(train_val_dataset))
+        # ConcatDatasetからラベルを取得するのは少し手間がかかるため、ここでは単純なランダム分割を行う
+        # もし層化抽出が必要な場合は、各データセットのラベルを事前に結合して行う必要がある
+        train_indices, val_indices = train_test_split(
+            train_val_indices,
+            test_size=config['data']['validation_split_ratio'],
+            random_state=config.get('seed', 42)
+        )
         
-        print(f"Training data subjects: {[j for j in range(num_folds) if i != j]}")
-        print(f"Testing data subject: {i}")
-        print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}, Test samples: {len(test_dataset)}")
+        train_subset = torch.utils.data.Subset(train_val_dataset, train_indices)
+        val_subset = torch.utils.data.Subset(train_val_dataset, val_indices)
+
+        batch_size = config['data']['batch_size']
+        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, collate_fn=data_processing, num_workers=os.cpu_count())
+        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, collate_fn=data_processing, num_workers=os.cpu_count())
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=data_processing, num_workers=os.cpu_count())
+        
+        print(f"Train samples: {len(train_subset)}, Val samples: {len(val_subset)}, Test samples: {len(test_dataset)}")
 
         # --- モデル、Trainerの初期化 ---
         if 'scheduler' in config:
@@ -135,8 +136,8 @@ def main(args):
         trainer_config.pop("beam_width", None)
 
         trainer = pl.Trainer(
-            logger=logger,
             callbacks=callbacks,
+            logger=logger,
             **trainer_config
         )
 
