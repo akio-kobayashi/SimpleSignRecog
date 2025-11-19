@@ -84,8 +84,16 @@ class SignDataset(Dataset):
         # メタデータから、idx番目のサンプルの情報を取得
         item_row = self.df.iloc[idx]
         
+        # --- パス解決の堅牢化 ---
+        # CSVに記録されたパス（絶対パスの場合も相対パスの場合もある）
+        path_from_csv = Path(item_row['npz_path'])
+        # パスの末尾2要素（クラスディレクトリ/ファイル名）を取得
+        # これにより、CSVに記録されたパスのルート部分が何であれ、常に正しい相対パスが得られる
+        relative_path = Path(*path_from_csv.parts[-2:])
+        # configで指定された正しいベースディレクトリと結合して最終的なパスを生成
+        npz_path = self.data_base_dir / relative_path
+
         # NPZファイルから生のランドマークデータをロード
-        npz_path = self.data_base_dir / item_row['npz_path']
         with np.load(npz_path) as data:
             landmarks = data['landmarks']
             
