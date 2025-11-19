@@ -1,58 +1,24 @@
+
+
 import argparse
 import yaml
 import pandas as pd
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split, ConcatDataset
+from torch.utils.data import DataLoader, random_split, ConcatDataset
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar, EarlyStopping
 from sklearn.metrics import confusion_matrix
 from pathlib import Path
-from collections import defaultdict
 import os
+import copy
 
+# ---------------------------------
+# train.pyと完全に同じデータセット処理をインポート
+from src.dataset import SignDataset, BucketBatchSampler, data_processing
 from src.solver import Solver
-
-class NpzLandmarkDataset(Dataset):
-    """
-    メタデータCSVとNPZランドマークファイルを読み込むためのPyTorch Datasetクラス。
-    """
-    def __init__(self, metadata_path: str, landmark_dir: str):
-        self.metadata = pd.read_csv(metadata_path)
-        self.landmark_dir = Path(landmark_dir)
-        # class_labelが0から始まっていない場合や、連続していない場合に対応
-        self.class_labels = sorted(self.metadata['class_label'].unique())
-        self.class_map = {label: i for i, label in enumerate(self.class_labels)}
-
-    def __len__(self):
-        return len(self.metadata)
-
-    def __getitem__(self, idx):
-        row = self.metadata.iloc[idx]
-        npz_path = self.landmark_dir / row['npz_path']
-        
-        with np.load(npz_path) as data:
-            landmarks = data['landmarks'].astype(np.float32)
-
-        # class_labelを0からの連番にマッピング
-        label = self.class_map[row['class_label']]
-        
-        features = torch.from_numpy(landmarks)
-        label_tensor = torch.tensor(label, dtype=torch.long)
-        lengths = torch.tensor(features.shape[0], dtype=torch.long)
-
-        return features, lengths, label_tensor
-
-def collate_fn(batch):
-    """
-    異なる長さのシーケンスをパディングするためのCollate関数。
-    """
-    features, lengths, labels = zip(*batch)
-    padded_features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True, padding_value=0.0)
-    labels = torch.stack(labels)
-    lengths = torch.stack(lengths)
-    return padded_features, lengths, labels
+# ---------------------------------
 
 def get_feature_dim(feature_config: dict) -> int:
     """
@@ -94,35 +60,53 @@ def main(args):
         raise ValueError("`cross_subject.subjects` section not found in config file.")
 
     # --- 全話者のデータセットを事前にロード ---
-    all_subject_datasets = [
-        NpzLandmarkDataset(
-            metadata_path=s['metadata_path'],
-            landmark_dir=s['source_landmark_dir']
-        ) for s in cs_config['subjects']
+    # メタデータのみを先に読み込む
+    all_subject_metadata = [
+        pd.read_csv(s['metadata_path']) for s in cs_config['subjects']
     ]
     
-    num_folds = len(all_subject_datasets)
-    fold_metrics = defaultdict(list)
+    num_folds = len(all_subject_metadata)
 
     # --- 交差検証ループ ---
     for i in range(num_folds):
         print(f"\n{'='*20} FOLD {i+1}/{num_folds} {'='*20}")
         
         # --- データセットの準備 ---
-        test_dataset = all_subject_datasets[i]
-        train_val_datasets = [ds for j, ds in enumerate(all_subject_datasets) if i != j]
-        train_val_dataset = ConcatDataset(train_val_datasets)
+        test_df = all_subject_metadata[i]
+        train_val_dfs = [df for j, df in enumerate(all_subject_metadata) if i != j]
+        train_val_df = pd.concat(train_val_dfs, ignore_index=True)
 
-        val_ratio = config['data'].get('validation_split_ratio', 0.1)
-        n_train_val = len(train_val_dataset)
-        n_val = int(n_train_val * val_ratio)
-        n_train = n_train_val - n_val
-        train_dataset, val_dataset = random_split(train_val_dataset, [n_train, n_val])
+        # 訓練・検証データをさらに訓練用と検証用に分割
+        train_df, val_df = train_test_split(
+            train_val_df,
+            test_size=config['data']['validation_split_ratio'],
+            random_state=config.get('seed', 42),
+            stratify=train_val_df['class_label']
+        )
+        
+        # --- データセットとデータローダーの作成 (train.pyと共通化) ---
+        eval_config = copy.deepcopy(config)
+        eval_config['data']['augmentation'] = {}
 
-        batch_size = config['data']['batch_size']
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=os.cpu_count())
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=os.cpu_count())
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=os.cpu_count())
+        train_dataset = SignDataset(
+            metadata_df=train_df,
+            data_base_dir=cs_config['subjects'][0]['source_landmark_dir'], # base_dirは共通と仮定
+            config=config
+        )
+        val_dataset = SignDataset(
+            metadata_df=val_df,
+            data_base_dir=cs_config['subjects'][0]['source_landmark_dir'],
+            config=eval_config
+        )
+        test_dataset = SignDataset(
+            metadata_df=test_df,
+            data_base_dir=cs_config['subjects'][0]['source_landmark_dir'],
+            config=eval_config
+        )
+
+        train_loader = DataLoader(train_dataset, batch_size=config['data']['batch_size'], shuffle=True, collate_fn=data_processing, num_workers=os.cpu_count())
+        val_loader = DataLoader(val_dataset, batch_size=config['data']['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=os.cpu_count())
+        test_loader = DataLoader(test_dataset, batch_size=config['data']['batch_size'], shuffle=False, collate_fn=data_processing, num_workers=os.cpu_count())
         
         print(f"Training data subjects: {[j for j in range(num_folds) if i != j]}")
         print(f"Testing data subject: {i}")
@@ -134,14 +118,19 @@ def main(args):
         
         solver = Solver(config)
         
-        # 毎回新しいログディレクトリとチェックポイントを作成
-        logger = TensorBoardLogger(save_dir=config['logger']['save_dir'], name=f"{config['logger']['name']}_cs_fold_{i+1}")
-        checkpoint_callback = ModelCheckpoint(dirpath=f"{config['checkpoint']['dirpath']}/cs_fold_{i+1}/", monitor=config['checkpoint']['monitor'], mode=config['checkpoint']['mode'])
+        logger = TensorBoardLogger(save_dir=config['logger']['save_dir'], name=f"{config['logger']['name']}_cs", version=f"fold_{i}")
+        checkpoint_callback = ModelCheckpoint(dirpath=Path(logger.log_dir) / "checkpoints", monitor=config['checkpoint']['monitor'], mode=config['checkpoint']['mode'])
         
         callbacks = [checkpoint_callback, TQDMProgressBar(refresh_rate=10)]
         if "early_stopping" in config:
             early_stopping_callback = EarlyStopping(**config["early_stopping"])
             callbacks.append(early_stopping_callback)
+
+        trainer_config = config["trainer"].copy()
+        trainer_config.pop("metrics_average_mode", None)
+        trainer_config.pop("xgboost_params", None)
+        trainer_config.pop("decode_method", None)
+        trainer_config.pop("beam_width", None)
 
         trainer = pl.Trainer(
             max_epochs=config['trainer']['max_epochs'],
@@ -149,7 +138,8 @@ def main(args):
             logger=logger,
             callbacks=callbacks,
             log_every_n_steps=config['trainer']['log_every_n_steps'],
-            enable_progress_bar=True
+            enable_progress_bar=True,
+            **trainer_config
         )
 
         # --- 学習 & テスト ---
@@ -160,16 +150,13 @@ def main(args):
         y_true = solver.test_labels.cpu().numpy()
         y_pred = solver.test_preds.cpu().numpy()
 
-        # 混同行列を計算
         num_classes = config['model']['num_classes']
         cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
         
-        # 出力先ディレクトリをconfigから取得
         output_dir = Path(cs_config.get("cm_output_dir", "results/confusion_matrices_cs"))
         output_dir.mkdir(exist_ok=True, parents=True)
         fold_results_path = output_dir / f"cs_fold_{i}_cm.csv"
 
-        # 混同行列をCSVとして保存
         pd.DataFrame(cm).to_csv(fold_results_path, index=False, header=False)
         print(f"混同行列を保存しました: {fold_results_path}")
 
