@@ -1,3 +1,5 @@
+
+
 import argparse
 import pandas as pd
 import numpy as np
@@ -7,6 +9,7 @@ from collections import defaultdict
 def calculate_metrics_from_cm(cm: np.ndarray):
     """
     混同行列(Confusion Matrix)から各クラスの指標を計算する。
+    numpyのベクトル計算を用いて、ループをなくし、可読性と正確性を向上させる。
     """
     num_classes = cm.shape[0]
     
@@ -14,12 +17,14 @@ def calculate_metrics_from_cm(cm: np.ndarray):
     fp = np.sum(cm, axis=0) - tp
     fn = np.sum(cm, axis=1) - tp
 
+    # 分母が0の場合は0とする
     precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=float), where=(tp + fp) != 0)
     recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) != 0)
     
     f1_denom = precision + recall
     f1 = np.divide(2 * precision * recall, f1_denom, out=np.zeros_like(f1_denom, dtype=float), where=f1_denom != 0)
 
+    # Per-class Accuracy (Jaccard) = TP / (TP + FP + FN)
     jaccard_denom = tp + fp + fn
     accuracy = np.divide(tp, jaccard_denom, out=np.zeros_like(tp, dtype=float), where=jaccard_denom != 0)
 
@@ -30,7 +35,7 @@ def calculate_metrics_from_cm(cm: np.ndarray):
         "f1": f1,
     }
 
-def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_output_path: Path, stats_output_path: Path):
+def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_output_path: Path, stats_output_path: Path | None):
     """
     保存された混同行列ファイルから、最終的な統計量とレポートを生成する。
     --modeに応じて出力内容を切り替える。
@@ -47,11 +52,51 @@ def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_out
 
     class_names = [f"class_{i}" for i in range(num_classes)]
 
-    # --- 1. 全体を統合した最終レポートを計算 (両方のモードで必須) ---    print("\n--- 全体を統合した最終レポートを計算しています ---")    total_cm = np.sum(all_cms, axis=0)    if total_cm.shape[0] != num_classes:        print(f"エラー: 混同行列のサイズ({total_cm.shape[0]})が指定されたクラス数({num_classes})と一致しません。")        return    report_metrics = calculate_metrics_from_cm(total_cm)    support = np.sum(total_cm, axis=1)    report_data = []    for i in range(num_classes):        report_data.append({            "precision": report_metrics["precision"][i],            "recall": report_metrics["recall"][i],            "f1-score": report_metrics["f1"][i],            "accuracy": report_metrics["accuracy"][i], # クラスごとAccuracyを追加            "support": support[i]        })    report_df = pd.DataFrame(report_data, index=class_names)    # 全体指標の計算    overall_accuracy = np.sum(np.diag(total_cm)) / np.sum(total_cm) if np.sum(total_cm) > 0 else 0.0    # マクロ平均    macro_avg_metrics = report_df.loc[class_names].mean()    macro_avg_metrics['support'] = np.sum(support)    report_df.loc['macro avg'] = macro_avg_metrics    # 加重平均    weighted_avg_metrics = np.average(report_df.loc[class_names, ['precision', 'recall', 'f1-score', 'accuracy']], axis=0, weights=support)    report_df.loc['weighted avg', ['precision', 'recall', 'f1-score', 'accuracy']] = weighted_avg_metrics    report_df.loc['weighted avg', 'support'] = np.sum(support)    # 全体Accuracyをサマリーとして表示    print(f"\nOverall Accuracy: {overall_accuracy:.4f}")    report_output_path.parent.mkdir(parents=True, exist_ok=True)    report_df.to_csv(report_output_path, float_format='%.4f')    print(f"全体の詳細レポートを保存しました: {report_output_path}")    print(report_df)
+    # --- 1. 全体を統合した最終レポートを計算 (両方のモードで必須) ---
+    print("\n--- 全体を統合した最終レポートを計算しています ---")
+    
+    total_cm = np.sum(all_cms, axis=0)
+    
+    if total_cm.shape[0] != num_classes:
+        print(f"エラー: 混同行列のサイズ({total_cm.shape[0]})が指定されたクラス数({num_classes})と一致しません。")
+        return
 
-    # --- 2. グラフ描画用の統計量 (csモードのみ) ---
-    if mode == 'cs':
-        print("\n--- [csモード] グラフ描画用の統計量（平均・標準偏差）を計算しています ---")
+    report_metrics = calculate_metrics_from_cm(total_cm)
+    support = np.sum(total_cm, axis=1)
+    
+    report_data = []
+    for i in range(num_classes):
+        report_data.append({
+            "precision": report_metrics["precision"][i],
+            "recall": report_metrics["recall"][i],
+            "f1-score": report_metrics["f1"][i],
+            "accuracy": report_metrics["accuracy"][i],
+            "support": support[i]
+        })
+    
+    report_df = pd.DataFrame(report_data, index=class_names)
+    
+    overall_accuracy = np.sum(np.diag(total_cm)) / np.sum(total_cm) if np.sum(total_cm) > 0 else 0.0
+    
+    macro_avg_metrics = report_df.loc[class_names].mean()
+    macro_avg_metrics['support'] = np.sum(support)
+    report_df.loc['macro avg'] = macro_avg_metrics
+    
+    weighted_avg_metrics = np.average(report_df.loc[class_names, ['precision', 'recall', 'f1-score', 'accuracy']], axis=0, weights=support)
+    report_df.loc['weighted avg', ['precision', 'recall', 'f1-score', 'accuracy']] = weighted_avg_metrics
+    report_df.loc['weighted avg', 'support'] = np.sum(support)
+
+    print(f"\nOverall Accuracy (Micro): {overall_accuracy:.4f}")
+
+    report_output_path.parent.mkdir(parents=True, exist_ok=True)
+    report_df.to_csv(report_output_path, float_format='%.4f')
+    print(f"全体の詳細レポートを保存しました: {report_output_path}")
+    print(report_df)
+
+    # --- 2. グラフ描画用の統計量 (csモードとcvモードで処理を分岐) ---
+    # cvモードでも統計ファイルを生成する
+    if mode == 'cs' or mode == 'cv':
+        print(f"\n--- [{mode}モード] グラフ描画用の統計量（平均・標準偏差）を計算しています ---")
         
         per_fold_metrics = defaultdict(list)
         for cm in all_cms:
@@ -66,6 +111,7 @@ def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_out
         metric_names = ["accuracy", "precision", "recall", "f1"]
         num_folds = len(all_cms)
 
+        # クラスごとの統計量を計算
         for name in metric_names:
             if name not in per_fold_metrics: continue
             
@@ -83,14 +129,31 @@ def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_out
                     row[f"fold_{fold_idx}"] = stacked_values[fold_idx, i]
                 stats_rows.append(row)
 
+        # 全体（マクロ平均）の統計量を計算
+        for name in metric_names:
+            if name not in per_fold_metrics: continue
+
+            stacked_values = np.array(per_fold_metrics[name])
+            overall_scores_per_fold = np.mean(stacked_values, axis=1)
+            
+            mean_of_overalls = np.mean(overall_scores_per_fold)
+            std_of_overalls = np.std(overall_scores_per_fold)
+
+            row = {
+                "metric": f"test_{name}",
+                "class_label": "overall",
+                "mean": mean_of_overalls,
+                "std": std_of_overalls
+            }
+            for fold_idx, score in enumerate(overall_scores_per_fold):
+                row[f"fold_{fold_idx}"] = score
+            stats_rows.append(row)
+
         stats_df = pd.DataFrame(stats_rows)
         stats_output_path.parent.mkdir(parents=True, exist_ok=True)
         stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
         print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
         print(stats_df)
-    else:
-        print("\n--- [cvモード] 統計量ファイルは生成されません ---")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="混同行列ファイルを集計し、最終的なレポートと統計量を生成します。")
@@ -98,16 +161,11 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, required=True, choices=['cv', 'cs'], help="実行モード ('cv' for K-Fold/LOO, 'cs' for cross-subject)")
     parser.add_argument("--num-classes", type=int, required=True, help="クラス数")
     parser.add_argument("--report-out", type=str, required=True, help="詳細レポートCSVの出力パス")
-    parser.add_argument("--stats-out", type=str, default=None, help="統計量CSVの出力パス (csモードでのみ使用)")
+    parser.add_argument("--stats-out", type=str, required=True, help="統計量CSVの出力パス")
     args = parser.parse_args()
-
-    if args.mode == 'cs' and args.stats_out is None:
-        parser.error("--stats-out は --mode cs の場合に必須です。")
 
     results_path = Path(args.results_dir)
     if not results_path.is_dir():
         print(f"エラー: 指定されたディレクトリが見つかりません: {results_path}")
     else:
-        # configはもはや不要だが、後方互換性や他の目的のためにダミーを渡す
-        config = {'model': {'num_classes': args.num_classes}}
-        aggregate_results(results_path, args.num_classes, args.mode, Path(args.report_out), Path(args.stats_out) if args.stats_out else None)
+        aggregate_results(results_path, args.num_classes, args.mode, Path(args.report_out), Path(args.stats_out))
