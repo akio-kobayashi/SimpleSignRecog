@@ -24,9 +24,8 @@ def calculate_metrics_from_cm(cm: np.ndarray):
     f1_denom = precision + recall
     f1 = np.divide(2 * precision * recall, f1_denom, out=np.zeros_like(f1_denom, dtype=float), where=f1_denom != 0)
 
-    # Per-class Accuracy (Jaccard) = TP / (TP + FP + FN)
-    jaccard_denom = tp + fp + fn
-    accuracy = np.divide(tp, jaccard_denom, out=np.zeros_like(tp, dtype=float), where=jaccard_denom != 0)
+    # accuracyは、ご要望に基づきrecallと同一の値とする
+    accuracy = recall
 
     return {
         "accuracy": accuracy,
