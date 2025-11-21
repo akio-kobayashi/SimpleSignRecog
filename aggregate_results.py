@@ -8,37 +8,33 @@ from collections import defaultdict
 def calculate_metrics_from_cm(cm: np.ndarray):
     """
     混同行列(Confusion Matrix)から各クラスの指標を計算する。
+    numpyのベクトル計算を用いて、ループをなくし、可読性と正確性を向上させる。
     """
     num_classes = cm.shape[0]
-    metrics = {
-        "accuracy": np.zeros(num_classes),
-        "precision": np.zeros(num_classes),
-        "recall": np.zeros(num_classes),
-        "f1": np.zeros(num_classes),
-    }
-
+    
+    # TP, FP, FNをベクトルとして一括で計算
     tp = np.diag(cm)
     fp = np.sum(cm, axis=0) - tp
     fn = np.sum(cm, axis=1) - tp
+    
+    # 各指標を計算 (分母が0の場合は0とする)
+    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=float), where=(tp + fp) != 0)
+    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) != 0)
+    
+    f1_denom = precision + recall
+    f1 = np.divide(2 * precision * recall, f1_denom, out=np.zeros_like(f1_denom, dtype=float), where=f1_denom != 0)
 
-    for i in range(num_classes):
-        # Precision = TP / (TP + FP)
-        precision_denom = tp[i] + fp[i]
-        metrics["precision"][i] = tp[i] / precision_denom if precision_denom > 0 else 0.0
-        
-        # Recall = TP / (TP + FN)
-        recall_denom = tp[i] + fn[i]
-        metrics["recall"][i] = tp[i] / recall_denom if recall_denom > 0 else 0.0
-        
-        # F1-Score = 2 * (Precision * Recall) / (Precision + Recall)
-        f1_denom = metrics["precision"][i] + metrics["recall"][i]
-        metrics["f1"][i] = 2 * (metrics["precision"][i] * metrics["recall"][i]) / f1_denom if f1_denom > 0 else 0.0
+    # Per-class Accuracy (Jaccard) = TP / (TP + FP + FN)
+    jaccard_denom = tp + fp + fn
+    accuracy = np.divide(tp, jaccard_denom, out=np.zeros_like(tp, dtype=float), where=jaccard_denom != 0)
 
-        # Per-class Accuracy (Jaccard) = TP / (TP + FP + FN)
-        jaccard_denom = tp[i] + fp[i] + fn[i]
-        metrics["accuracy"][i] = tp[i] / jaccard_denom if jaccard_denom > 0 else 0.0
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
-    return metrics
 
 def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, report_output_path: Path):
     """
