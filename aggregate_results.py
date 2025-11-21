@@ -77,7 +77,7 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     num_classes = config['model']['num_classes']
     class_names = [f"class_{i}" for i in range(num_classes)]
 
-    # --- 1. グラフ描画用の統計量 (平均・標準偏差) を計算 ---
+    # --- 1. グラフ描画用の統計量 (平均・標準偏差・個別スコア) を計算 ---
     print("\n--- グラフ描画用の統計量を計算しています ---")
     
     per_fold_metrics = defaultdict(list)
@@ -90,46 +90,48 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
             per_fold_metrics[name].append(values)
             
     stats_rows = []
-    # accuracy_overall: scalar（meanのみ），
-    # accuracy_per_class・precision・recall・f1: クラスごとのベクトル
-    metric_names = ["accuracy_overall", "accuracy_per_class", "precision", "recall", "f1"]
-    for name in metric_names:
+    num_folds = len(all_cms)
+    
+    # 全体正解率 (Overall Accuracy) の行を作成
+    if "accuracy_overall" in per_fold_metrics:
+        overall_acc_values = per_fold_metrics["accuracy_overall"]
+        row = {
+            "metric": "test_accuracy_overall",
+            "class_label": "overall",
+            "mean": np.mean(overall_acc_values),
+            "std": np.std(overall_acc_values)
+        }
+        for i, val in enumerate(overall_acc_values):
+            row[f"fold_{i}"] = val
+        stats_rows.append(row)
+
+    # クラスごと指標の行を作成
+    per_class_metric_names = ["accuracy_per_class", "precision", "recall", "f1"]
+    for name in per_class_metrics_names:
         if name not in per_fold_metrics:
             continue
 
         stacked_values = np.array(per_fold_metrics[name])
-
-        if name == "accuracy_overall":
-            # overall accuracy は平均のみ算出し，std は NaN（エラーバーなし）
-            mean = float(np.mean(stacked_values))
-            std = np.nan
-            stats_rows.append({
-                "metric": "test_accuracy_overall",
-                "class_label": "overall",
-                "mean": mean,
-                "std": std,
-            })
-        else:
-            # accuracy_per_class, precision, recall, f1: (num_folds, num_classes)
-            means = np.mean(stacked_values, axis=0)
-            stds = np.std(stacked_values, axis=0)
-            for i in range(num_classes):
-                if name == "accuracy_per_class":
-                    metric_label = "test_accuracy"   # 要望どおり test_accuracy に統一
-                else:
-                    metric_label = f"test_{name}"
-                stats_rows.append({
-                    "metric": metric_label,
-                    "class_label": f"class_{i}",
-                    "mean": means[i],
-                    "std": stds[i],
-                })
+        means = np.mean(stacked_values, axis=0)
+        stds = np.std(stacked_values, axis=0)
+        
+        for i in range(num_classes):
+            metric_label = "test_accuracy" if name == "accuracy_per_class" else f"test_{name}"
+            row = {
+                "metric": metric_label,
+                "class_label": f"class_{i}",
+                "mean": means[i],
+                "std": stds[i]
+            }
+            for fold_idx in range(num_folds):
+                row[f"fold_{fold_idx}"] = stacked_values[fold_idx, i]
+            stats_rows.append(row)
 
     stats_df = pd.DataFrame(stats_rows)
     stats_output_path.parent.mkdir(parents=True, exist_ok=True)
     stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
     print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
-    print(stats_df) # .head() を削除し、全件表示
+    print(stats_df)
 
     # --- 2. 全体を統合した最終レポートを計算 ---
     print("\n--- 全体を統合した最終レポートを計算しています ---")
