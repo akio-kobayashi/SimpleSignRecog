@@ -127,28 +127,32 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="混同行列ファイルを集計し、最終的なレポートと統計量を生成します。")
     parser.add_argument("results_dir", type=str, help="混同行列CSVが保存されているディレクトリ")
-    parser.add_argument("--config", type=str, default="config.yaml", help="YAML形式の設定ファイル")
+    parser.add_argument("--config", type=str, default=None, help="YAML形式の設定ファイル（num_classesの取得に利用）")
     parser.add_argument("--stats-out", type=str, default="results_stats.csv", help="統計量CSVの出力パス")
     parser.add_argument("--report-out", type=str, default="classification_report.csv", help="詳細レポートCSVの出力パス")
-    parser.add_argument("--num-classes", type=int, default=None, help="クラス数 (config.yamlにない場合のフォールバック)")
+    parser.add_argument("--num-classes", type=int, default=None, help="クラス数 (configファイルがない場合の必須項目)")
     args = parser.parse_args()
+
+    config = {}
+    num_classes = None
+
+    if args.config:
+        with open(args.config, "r") as yf:
+            config = yaml.safe_load(yf)
+        num_classes = config.get('model', {}).get('num_classes')
+        if num_classes:
+            print(f"num_classesをconfig.yamlから使用します: {num_classes}")
+
+    if num_classes is None:
+        if args.num_classes:
+            num_classes = args.num_classes
+            config.setdefault('model', {})['num_classes'] = num_classes
+            print(f"num_classesを --num-classes 引数から使用します: {num_classes}")
+        else:
+            raise ValueError("`--config`で指定されたファイルに`num_classes`がない場合、`--num-classes`引数は必須です。")
 
     results_path = Path(args.results_dir)
     if not results_path.is_dir():
         print(f"エラー: 指定されたディレクトリが見つかりません: {results_path}")
     else:
-        with open(args.config, "r") as yf:
-            config = yaml.safe_load(yf)
-        
-        # --- num_classesの決定ロジック ---
-        num_classes_from_config = config.get('model', {}).get('num_classes')
-        num_classes_from_args = args.num_classes
-        if num_classes_from_config is not None:
-            print(f"num_classesをconfig.yamlから使用します: {num_classes_from_config}")
-        elif num_classes_from_args is not None:
-            config.setdefault('model', {})['num_classes'] = num_classes_from_args
-            print(f"num_classesを --num-classes 引数から使用します: {num_classes_from_args}")
-        else:
-            raise ValueError("`num_classes`がconfig.yamlにも--num-classes引数にも指定されていません。")
-
         aggregate_results(results_path, config, Path(args.stats_out), Path(args.report_out))
