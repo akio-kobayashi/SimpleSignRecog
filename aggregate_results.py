@@ -1,5 +1,3 @@
-
-
 import argparse
 import yaml
 import pandas as pd
@@ -13,6 +11,7 @@ def calculate_metrics_from_cm(cm: np.ndarray):
     """
     num_classes = cm.shape[0]
     metrics = {
+        "accuracy": np.zeros(num_classes),
         "precision": np.zeros(num_classes),
         "recall": np.zeros(num_classes),
         "f1": np.zeros(num_classes),
@@ -23,14 +22,21 @@ def calculate_metrics_from_cm(cm: np.ndarray):
     fn = np.sum(cm, axis=1) - tp
 
     for i in range(num_classes):
+        # Precision = TP / (TP + FP)
         precision_denom = tp[i] + fp[i]
-        recall_denom = tp[i] + fn[i]
-        
         metrics["precision"][i] = tp[i] / precision_denom if precision_denom > 0 else 0.0
+        
+        # Recall = TP / (TP + FN)
+        recall_denom = tp[i] + fn[i]
         metrics["recall"][i] = tp[i] / recall_denom if recall_denom > 0 else 0.0
         
+        # F1-Score = 2 * (Precision * Recall) / (Precision + Recall)
         f1_denom = metrics["precision"][i] + metrics["recall"][i]
         metrics["f1"][i] = 2 * (metrics["precision"][i] * metrics["recall"][i]) / f1_denom if f1_denom > 0 else 0.0
+
+        # Per-class Accuracy (Jaccard) = TP / (TP + FP + FN)
+        jaccard_denom = tp[i] + fp[i] + fn[i]
+        metrics["accuracy"][i] = tp[i] / jaccard_denom if jaccard_denom > 0 else 0.0
 
     return metrics
 
@@ -56,7 +62,6 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     
     per_fold_metrics = defaultdict(list)
     for cm in all_cms:
-        # 各フォールドの混同行列が正しいサイズか確認
         if cm.shape[0] != num_classes or cm.shape[1] != num_classes:
             print(f"警告: 予期しない形状の混同行列をスキップします: {cm.shape}")
             continue
@@ -65,7 +70,7 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
             per_fold_metrics[name].append(values)
 
     stats_rows = []
-    metric_names = ["acc", "precision", "recall", "f1"] # 'acc'は後で計算
+    metric_names = ["accuracy", "precision", "recall", "f1"]
     for name in metric_names:
         if name not in per_fold_metrics: continue
         
@@ -81,11 +86,10 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
             })
 
     stats_df = pd.DataFrame(stats_rows)
-    # ディレクトリを作成
     stats_output_path.parent.mkdir(parents=True, exist_ok=True)
     stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
     print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
-    print(stats_df.head())
+    print(stats_df) # .head() を削除し、全件表示
 
     # --- 2. 全体を統合した最終レポートを計算 ---
     print("\n--- 全体を統合した最終レポートを計算しています ---")
@@ -117,7 +121,6 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     report_df.loc['weighted avg', ['precision', 'recall', 'f1-score']] = weighted_avg
     report_df.loc['weighted avg', 'support'] = np.sum(support)
 
-    # ディレクトリを作成
     report_output_path.parent.mkdir(parents=True, exist_ok=True)
     report_df.to_csv(report_output_path, float_format='%.4f')
     print(f"全体の詳細レポートを保存しました: {report_output_path}")
