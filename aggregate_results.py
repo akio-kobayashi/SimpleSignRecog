@@ -37,7 +37,7 @@ def calculate_metrics_from_cm(cm: np.ndarray):
     f1 = np.divide(
         2 * precision * recall, f1_denom,
         out=np.zeros_like(f1_denom, dtype=float),
-        where=f1_denom != 0,
+        where=(f1_denom != 0),
     )
 
     # per-class accuracy: TP_k / (TP_k + FN_k)（実質 recall と同じだが別名で保持）
@@ -59,7 +59,6 @@ def calculate_metrics_from_cm(cm: np.ndarray):
         "recall": recall,                          # per-class
         "f1": f1,                                  # per-class
     }
-
 
 def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, report_output_path: Path):
     """
@@ -89,9 +88,10 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
         metrics = calculate_metrics_from_cm(cm)
         for name, values in metrics.items():
             per_fold_metrics[name].append(values)
-
+            
     stats_rows = []
-    # accuracy_overall: scalar, それ以外はクラスごとのベクトル
+    # accuracy_overall: scalar（meanのみ），
+    # accuracy_per_class・precision・recall・f1: クラスごとのベクトル
     metric_names = ["accuracy_overall", "accuracy_per_class", "precision", "recall", "f1"]
     for name in metric_names:
         if name not in per_fold_metrics:
@@ -100,11 +100,11 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
         stacked_values = np.array(per_fold_metrics[name])
 
         if name == "accuracy_overall":
-            # 各フォールドごとの overall accuracy（scalar）
+            # overall accuracy は平均のみ算出し，std は NaN（エラーバーなし）
             mean = float(np.mean(stacked_values))
-            std = float(np.std(stacked_values))
+            std = np.nan
             stats_rows.append({
-                "metric": f"test_{name}",
+                "metric": "test_accuracy_overall",
                 "class_label": "overall",
                 "mean": mean,
                 "std": std,
@@ -114,8 +114,12 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
             means = np.mean(stacked_values, axis=0)
             stds = np.std(stacked_values, axis=0)
             for i in range(num_classes):
+                if name == "accuracy_per_class":
+                    metric_label = "test_accuracy"   # 要望どおり test_accuracy に統一
+                else:
+                    metric_label = f"test_{name}"
                 stats_rows.append({
-                    "metric": f"test_{name}",
+                    "metric": metric_label,
                     "class_label": f"class_{i}",
                     "mean": means[i],
                     "std": stds[i],
