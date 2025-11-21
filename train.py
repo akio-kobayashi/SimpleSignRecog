@@ -304,8 +304,9 @@ def main(config: dict, checkpoint_path: str | None = None):
 # このスクリプトが直接実行された場合にのみ以下のコードが実行されます
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--config", type=str, default="config.yaml", help="YAML形式の設定ファイル")
+    parser.add_argument("-c", "--config", type=str, default="config.yaml", help="YAML形式の設定ファイル")
     parser.add_argument("--checkpoint", type=str, default=None, help="モデルのチェックポイント（CVでは非推奨）")
+    parser.add_argument("--num-classes", type=int, default=None, help="クラス数 (config.yamlにない場合のフォールバック)")
     args = parser.parse_args()
 
     # 高速な行列計算のためのPyTorch設定
@@ -314,6 +315,24 @@ if __name__ == "__main__":
     # 設定ファイルを読み込み
     with open(args.config, "r") as yf:
         config = yaml.safe_load(yf)
+
+    # --- num_classesの決定ロジック ---
+    # 1. configファイルから取得を試みる
+    num_classes_from_config = config.get('model', {}).get('num_classes')
+    
+    # 2. コマンドライン引数から取得
+    num_classes_from_args = args.num_classes
+
+    if num_classes_from_config is not None:
+        # configの値が最優先
+        print(f"num_classesをconfig.yamlから使用します: {num_classes_from_config}")
+    elif num_classes_from_args is not None:
+        # configになく、引数にあればそれを使用
+        config.setdefault('model', {})['num_classes'] = num_classes_from_args
+        print(f"num_classesを --num-classes 引数から使用します: {num_classes_from_args}")
+    else:
+        # どちらにもなければエラー
+        raise ValueError("`num_classes`がconfig.yamlにも--num-classes引数にも指定されていません。")
 
     # メイン関数を実行
     main(config, checkpoint_path=args.checkpoint)

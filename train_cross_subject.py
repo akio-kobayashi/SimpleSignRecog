@@ -44,6 +44,17 @@ def main(args):
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
+    # --- num_classesの決定ロジック ---
+    num_classes_from_config = config.get('model', {}).get('num_classes')
+    num_classes_from_args = args.num_classes
+    if num_classes_from_config is not None:
+        print(f"num_classesをconfig.yamlから使用します: {num_classes_from_config}")
+    elif num_classes_from_args is not None:
+        config.setdefault('model', {})['num_classes'] = num_classes_from_args
+        print(f"num_classesを --num-classes 引数から使用します: {num_classes_from_args}")
+    else:
+        raise ValueError("`num_classes`がconfig.yamlにも--num-classes引数にも指定されていません。")
+
     pl.seed_everything(config.get('seed', 42))
 
     feature_dim = get_feature_dim(config.get('features', {}))
@@ -172,5 +183,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Cross-subject validation training script.")
     parser.add_argument('-c', '--config', type=str, default='config.yaml',
                         help='Path to the configuration file.')
+    parser.add_argument("--num-classes", type=int, default=None, help="クラス数 (config.yamlにない場合のフォールバック)")
     args = parser.parse_args()
     main(args)
