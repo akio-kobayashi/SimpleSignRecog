@@ -1,5 +1,4 @@
 import argparse
-import yaml
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -7,62 +6,34 @@ from collections import defaultdict
 
 def calculate_metrics_from_cm(cm: np.ndarray):
     """
-    混同行列(Confusion Matrix)から指標を計算する。
-    - accuracy_overall: 全体の正答率（micro, scalar）
-    - accuracy_per_class: クラスごとの正答率 (TP / (TP + FN), ベクトル)
-    - precision, recall, f1: 各クラスの値（ベクトル）
+    混同行列(Confusion Matrix)から各クラスの指標を計算する。
     """
     num_classes = cm.shape[0]
-
-    # TP, FP, FN をベクトルとして一括で計算（行 = 正解, 列 = 予測を想定）
+    
     tp = np.diag(cm)
     fp = np.sum(cm, axis=0) - tp
     fn = np.sum(cm, axis=1) - tp
 
-    # precision_k = TP_k / (TP_k + FP_k)
-    precision = np.divide(
-        tp, tp + fp,
-        out=np.zeros_like(tp, dtype=float),
-        where=(tp + fp) != 0,
-    )
-    # recall_k = TP_k / (TP_k + FN_k)
-    recall = np.divide(
-        tp, tp + fn,
-        out=np.zeros_like(tp, dtype=float),
-        where=(tp + fn) != 0,
-    )
-
-    # F1_k = 2 * P_k * R_k / (P_k + R_k)
+    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=float), where=(tp + fp) != 0)
+    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) != 0)
+    
     f1_denom = precision + recall
-    f1 = np.divide(
-        2 * precision * recall, f1_denom,
-        out=np.zeros_like(f1_denom, dtype=float),
-        where=(f1_denom != 0),
-    )
+    f1 = np.divide(2 * precision * recall, f1_denom, out=np.zeros_like(f1_denom, dtype=float), where=f1_denom != 0)
 
-    # per-class accuracy: TP_k / (TP_k + FN_k)（実質 recall と同じだが別名で保持）
-    accuracy_per_class = np.divide(
-        tp, tp + fn,
-        out=np.zeros_like(tp, dtype=float),
-        where=(tp + fn) != 0,
-    )
-
-    # overall accuracy (micro): 全クラス合計での正答率
-    total_tp = tp.sum()
-    total_samples = cm.sum()
-    accuracy_overall = float(total_tp / total_samples) if total_samples > 0 else 0.0
+    jaccard_denom = tp + fp + fn
+    accuracy = np.divide(tp, jaccard_denom, out=np.zeros_like(tp, dtype=float), where=jaccard_denom != 0)
 
     return {
-        "accuracy_overall": accuracy_overall,      # scalar
-        "accuracy_per_class": accuracy_per_class,  # per-class
-        "precision": precision,                    # per-class
-        "recall": recall,                          # per-class
-        "f1": f1,                                  # per-class
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
     }
 
-def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, report_output_path: Path):
+def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_output_path: Path, stats_output_path: Path):
     """
     保存された混同行列ファイルから、最終的な統計量とレポートを生成する。
+    --modeに応じて出力内容を切り替える。
     """
     print(f"--- '{results_dir}' から混同行列ファイルを読み込んでいます ---")
     
@@ -74,130 +45,69 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     all_cms = [pd.read_csv(file, header=None).to_numpy() for file in cm_files]
     print(f"{len(all_cms)} 個のフォールドの混同行列をロードしました。")
 
-    num_classes = config['model']['num_classes']
     class_names = [f"class_{i}" for i in range(num_classes)]
 
-    # --- 1. グラフ描画用の統計量 (平均・標準偏差・個別スコア) を計算 ---
-    print("\n--- グラフ描画用の統計量を計算しています ---")
-    
-    per_fold_metrics = defaultdict(list)
-    for cm in all_cms:
-        if cm.shape[0] != num_classes or cm.shape[1] != num_classes:
-            print(f"警告: 予期しない形状の混同行列をスキップします: {cm.shape}")
-            continue
-        metrics = calculate_metrics_from_cm(cm)
-        for name, values in metrics.items():
-            per_fold_metrics[name].append(values)
-            
-    stats_rows = []
-    num_folds = len(all_cms)
-    
-    # 全体正解率 (Overall Accuracy) の行を作成
-    if "accuracy_overall" in per_fold_metrics:
-        overall_acc_values = per_fold_metrics["accuracy_overall"]
-        row = {
-            "metric": "test_accuracy_overall",
-            "class_label": "overall",
-            "mean": np.mean(overall_acc_values),
-            "std": np.std(overall_acc_values)
-        }
-        for i, val in enumerate(overall_acc_values):
-            row[f"fold_{i}"] = val
-        stats_rows.append(row)
+    # --- 1. 全体を統合した最終レポートを計算 (両方のモードで必須) ---    print("\n--- 全体を統合した最終レポートを計算しています ---")    total_cm = np.sum(all_cms, axis=0)    if total_cm.shape[0] != num_classes:        print(f"エラー: 混同行列のサイズ({total_cm.shape[0]})が指定されたクラス数({num_classes})と一致しません。")        return    report_metrics = calculate_metrics_from_cm(total_cm)    support = np.sum(total_cm, axis=1)    report_data = []    for i in range(num_classes):        report_data.append({            "precision": report_metrics["precision"][i],            "recall": report_metrics["recall"][i],            "f1-score": report_metrics["f1"][i],            "accuracy": report_metrics["accuracy"][i], # クラスごとAccuracyを追加            "support": support[i]        })    report_df = pd.DataFrame(report_data, index=class_names)    # 全体指標の計算    overall_accuracy = np.sum(np.diag(total_cm)) / np.sum(total_cm) if np.sum(total_cm) > 0 else 0.0    # マクロ平均    macro_avg_metrics = report_df.loc[class_names].mean()    macro_avg_metrics['support'] = np.sum(support)    report_df.loc['macro avg'] = macro_avg_metrics    # 加重平均    weighted_avg_metrics = np.average(report_df.loc[class_names, ['precision', 'recall', 'f1-score', 'accuracy']], axis=0, weights=support)    report_df.loc['weighted avg', ['precision', 'recall', 'f1-score', 'accuracy']] = weighted_avg_metrics    report_df.loc['weighted avg', 'support'] = np.sum(support)    # 全体Accuracyをサマリーとして表示    print(f"\nOverall Accuracy: {overall_accuracy:.4f}")    report_output_path.parent.mkdir(parents=True, exist_ok=True)    report_df.to_csv(report_output_path, float_format='%.4f')    print(f"全体の詳細レポートを保存しました: {report_output_path}")    print(report_df)
 
-    # クラスごと指標の行を作成
-    per_class_metric_names = ["accuracy_per_class", "precision", "recall", "f1"]
-    for name in per_class_metric_names:
-        if name not in per_fold_metrics:
-            continue
-
-        stacked_values = np.array(per_fold_metrics[name])
-        means = np.mean(stacked_values, axis=0)
-        stds = np.std(stacked_values, axis=0)
+    # --- 2. グラフ描画用の統計量 (csモードのみ) ---
+    if mode == 'cs':
+        print("\n--- [csモード] グラフ描画用の統計量（平均・標準偏差）を計算しています ---")
         
-        for i in range(num_classes):
-            metric_label = "test_accuracy" if name == "accuracy_per_class" else f"test_{name}"
-            row = {
-                "metric": metric_label,
-                "class_label": f"class_{i}",
-                "mean": means[i],
-                "std": stds[i]
-            }
-            for fold_idx in range(num_folds):
-                row[f"fold_{fold_idx}"] = stacked_values[fold_idx, i]
-            stats_rows.append(row)
+        per_fold_metrics = defaultdict(list)
+        for cm in all_cms:
+            if cm.shape[0] != num_classes or cm.shape[1] != num_classes:
+                print(f"警告: 予期しない形状の混同行列をスキップします: {cm.shape}")
+                continue
+            metrics = calculate_metrics_from_cm(cm)
+            for name, values in metrics.items():
+                per_fold_metrics[name].append(values)
 
-    stats_df = pd.DataFrame(stats_rows)
-    stats_output_path.parent.mkdir(parents=True, exist_ok=True)
-    stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
-    print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
-    print(stats_df)
+        stats_rows = []
+        metric_names = ["accuracy", "precision", "recall", "f1"]
+        num_folds = len(all_cms)
 
-    # --- 2. 全体を統合した最終レポートを計算 ---
-    print("\n--- 全体を統合した最終レポートを計算しています ---")
-    
-    total_cm = np.sum(all_cms, axis=0)
-    
-    report_metrics = calculate_metrics_from_cm(total_cm)
-    support = np.sum(total_cm, axis=1)
-    
-    report_data = []
-    for i in range(num_classes):
-        report_data.append({
-            "precision": report_metrics["precision"][i],
-            "recall": report_metrics["recall"][i],
-            "f1-score": report_metrics["f1"][i],
-            "support": support[i]
-        })
-    
-    report_df = pd.DataFrame(report_data, index=class_names)
-    
-    # total_cm に対する overall accuracy（micro）
-    accuracy = report_metrics["accuracy_overall"]
-    report_df.loc['accuracy'] = [np.nan, np.nan, accuracy, np.sum(support)]    
-    macro_avg = report_df.loc[class_names].mean()
-    macro_avg['support'] = np.sum(support)
-    report_df.loc['macro avg'] = macro_avg
-    
-    weighted_avg = np.average(report_df.loc[class_names, ['precision', 'recall', 'f1-score']], axis=0, weights=support)
-    report_df.loc['weighted avg', ['precision', 'recall', 'f1-score']] = weighted_avg
-    report_df.loc['weighted avg', 'support'] = np.sum(support)
+        for name in metric_names:
+            if name not in per_fold_metrics: continue
+            
+            stacked_values = np.array(per_fold_metrics[name])
+            means = np.mean(stacked_values, axis=0)
+            stds = np.std(stacked_values, axis=0)
+            for i in range(num_classes):
+                row = {
+                    "metric": f"test_{name}",
+                    "class_label": f"class_{i}",
+                    "mean": means[i],
+                    "std": stds[i]
+                }
+                for fold_idx in range(num_folds):
+                    row[f"fold_{fold_idx}"] = stacked_values[fold_idx, i]
+                stats_rows.append(row)
 
-    report_output_path.parent.mkdir(parents=True, exist_ok=True)
-    report_df.to_csv(report_output_path, float_format='%.4f')
-    print(f"全体の詳細レポートを保存しました: {report_output_path}")
-    print(report_df)
+        stats_df = pd.DataFrame(stats_rows)
+        stats_output_path.parent.mkdir(parents=True, exist_ok=True)
+        stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
+        print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
+        print(stats_df)
+    else:
+        print("\n--- [cvモード] 統計量ファイルは生成されません ---")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="混同行列ファイルを集計し、最終的なレポートと統計量を生成します。")
     parser.add_argument("results_dir", type=str, help="混同行列CSVが保存されているディレクトリ")
-    parser.add_argument("--config", type=str, default=None, help="YAML形式の設定ファイル（num_classesの取得に利用）")
-    parser.add_argument("--stats-out", type=str, default="results_stats.csv", help="統計量CSVの出力パス")
-    parser.add_argument("--report-out", type=str, default="classification_report.csv", help="詳細レポートCSVの出力パス")
-    parser.add_argument("--num-classes", type=int, default=None, help="クラス数 (configファイルがない場合の必須項目)")
+    parser.add_argument("--mode", type=str, required=True, choices=['cv', 'cs'], help="実行モード ('cv' for K-Fold/LOO, 'cs' for cross-subject)")
+    parser.add_argument("--num-classes", type=int, required=True, help="クラス数")
+    parser.add_argument("--report-out", type=str, required=True, help="詳細レポートCSVの出力パス")
+    parser.add_argument("--stats-out", type=str, default=None, help="統計量CSVの出力パス (csモードでのみ使用)")
     args = parser.parse_args()
 
-    config = {}
-    num_classes = None
-
-    if args.config:
-        with open(args.config, "r") as yf:
-            config = yaml.safe_load(yf)
-        num_classes = config.get('model', {}).get('num_classes')
-        if num_classes:
-            print(f"num_classesをconfig.yamlから使用します: {num_classes}")
-
-    if num_classes is None:
-        if args.num_classes:
-            num_classes = args.num_classes
-            config.setdefault('model', {})['num_classes'] = num_classes
-            print(f"num_classesを --num-classes 引数から使用します: {num_classes}")
-        else:
-            raise ValueError("`--config`で指定されたファイルに`num_classes`がない場合、`--num-classes`引数は必須です。")
+    if args.mode == 'cs' and args.stats_out is None:
+        parser.error("--stats-out は --mode cs の場合に必須です。")
 
     results_path = Path(args.results_dir)
     if not results_path.is_dir():
         print(f"エラー: 指定されたディレクトリが見つかりません: {results_path}")
     else:
-        aggregate_results(results_path, config, Path(args.stats_out), Path(args.report_out))
+        # configはもはや不要だが、後方互換性や他の目的のためにダミーを渡す
+        config = {'model': {'num_classes': args.num_classes}}
+        aggregate_results(results_path, args.num_classes, args.mode, Path(args.report_out), Path(args.stats_out) if args.stats_out else None)
