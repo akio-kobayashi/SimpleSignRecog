@@ -8,7 +8,8 @@ from collections import defaultdict
 def calculate_metrics_from_cm(cm: np.ndarray):
     """
     混同行列(Confusion Matrix)から指標を計算する。
-    - accuracy: 全体の正答率（micro, scalar）
+    - accuracy_overall: 全体の正答率（micro, scalar）
+    - accuracy_per_class: クラスごとの正答率 (TP / (TP + FN), ベクトル)
     - precision, recall, f1: 各クラスの値（ベクトル）
     """
     num_classes = cm.shape[0]
@@ -18,18 +19,20 @@ def calculate_metrics_from_cm(cm: np.ndarray):
     fp = np.sum(cm, axis=0) - tp
     fn = np.sum(cm, axis=1) - tp
 
-    # 各指標を計算 (分母が0の場合は0とする)
+    # precision_k = TP_k / (TP_k + FP_k)
     precision = np.divide(
         tp, tp + fp,
         out=np.zeros_like(tp, dtype=float),
         where=(tp + fp) != 0,
     )
+    # recall_k = TP_k / (TP_k + FN_k)
     recall = np.divide(
         tp, tp + fn,
         out=np.zeros_like(tp, dtype=float),
         where=(tp + fn) != 0,
     )
 
+    # F1_k = 2 * P_k * R_k / (P_k + R_k)
     f1_denom = precision + recall
     f1 = np.divide(
         2 * precision * recall, f1_denom,
@@ -37,16 +40,24 @@ def calculate_metrics_from_cm(cm: np.ndarray):
         where=f1_denom != 0,
     )
 
+    # per-class accuracy: TP_k / (TP_k + FN_k)（実質 recall と同じだが別名で保持）
+    accuracy_per_class = np.divide(
+        tp, tp + fn,
+        out=np.zeros_like(tp, dtype=float),
+        where=(tp + fn) != 0,
+    )
+
     # overall accuracy (micro): 全クラス合計での正答率
     total_tp = tp.sum()
     total_samples = cm.sum()
-    accuracy = float(total_tp / total_samples) if total_samples > 0 else 0.0
+    accuracy_overall = float(total_tp / total_samples) if total_samples > 0 else 0.0
 
     return {
-        "accuracy": accuracy,      # scalar
-        "precision": precision,    # per-class
-        "recall": recall,          # per-class
-        "f1": f1,                  # per-class
+        "accuracy_overall": accuracy_overall,      # scalar
+        "accuracy_per_class": accuracy_per_class,  # per-class
+        "precision": precision,                    # per-class
+        "recall": recall,                          # per-class
+        "f1": f1,                                  # per-class
     }
 
 
@@ -80,25 +91,26 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
             per_fold_metrics[name].append(values)
 
     stats_rows = []
-    metric_names = ["accuracy", "precision", "recall", "f1"]
+    # accuracy_overall: scalar, それ以外はクラスごとのベクトル
+    metric_names = ["accuracy_overall", "accuracy_per_class", "precision", "recall", "f1"]
     for name in metric_names:
         if name not in per_fold_metrics:
             continue
 
         stacked_values = np.array(per_fold_metrics[name])
 
-        if name == "accuracy":
-            # accuracy は各フォールドごとの scalar → 1次元配列
+        if name == "accuracy_overall":
+            # 各フォールドごとの overall accuracy（scalar）
             mean = float(np.mean(stacked_values))
             std = float(np.std(stacked_values))
             stats_rows.append({
                 "metric": f"test_{name}",
-                "class_label": "overall",  # 全体 accuracy
+                "class_label": "overall",
                 "mean": mean,
                 "std": std,
             })
         else:
-            # precision, recall, f1 は per-class → (num_folds, num_classes)
+            # accuracy_per_class, precision, recall, f1: (num_folds, num_classes)
             means = np.mean(stacked_values, axis=0)
             stds = np.std(stacked_values, axis=0)
             for i in range(num_classes):
@@ -135,7 +147,7 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     report_df = pd.DataFrame(report_data, index=class_names)
     
     # total_cm に対する overall accuracy（micro）
-    accuracy = report_metrics["accuracy"]
+    accuracy = report_metrics["accuracy_overall"]
     report_df.loc['accuracy'] = [np.nan, np.nan, accuracy, np.sum(support)]    
     macro_avg = report_df.loc[class_names].mean()
     macro_avg['support'] = np.sum(support)
