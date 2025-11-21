@@ -7,32 +7,46 @@ from collections import defaultdict
 
 def calculate_metrics_from_cm(cm: np.ndarray):
     """
-    混同行列(Confusion Matrix)から各クラスの指標を計算する。
-    numpyのベクトル計算を用いて、ループをなくし、可読性と正確性を向上させる。
+    混同行列(Confusion Matrix)から指標を計算する。
+    - accuracy: 全体の正答率（micro, scalar）
+    - precision, recall, f1: 各クラスの値（ベクトル）
     """
     num_classes = cm.shape[0]
-    
-    # TP, FP, FNをベクトルとして一括で計算
+
+    # TP, FP, FN をベクトルとして一括で計算（行 = 正解, 列 = 予測を想定）
     tp = np.diag(cm)
     fp = np.sum(cm, axis=0) - tp
     fn = np.sum(cm, axis=1) - tp
-    
-    # 各指標を計算 (分母が0の場合は0とする)
-    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=float), where=(tp + fp) != 0)
-    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) != 0)
-    
-    f1_denom = precision + recall
-    f1 = np.divide(2 * precision * recall, f1_denom, out=np.zeros_like(f1_denom, dtype=float), where=f1_denom != 0)
 
-    # Per-class Accuracy (Jaccard) = TP / (TP + FP + FN)
-    jaccard_denom = tp + fp + fn
-    accuracy = np.divide(tp, jaccard_denom, out=np.zeros_like(tp, dtype=float), where=jaccard_denom != 0)
+    # 各指標を計算 (分母が0の場合は0とする)
+    precision = np.divide(
+        tp, tp + fp,
+        out=np.zeros_like(tp, dtype=float),
+        where=(tp + fp) != 0,
+    )
+    recall = np.divide(
+        tp, tp + fn,
+        out=np.zeros_like(tp, dtype=float),
+        where=(tp + fn) != 0,
+    )
+
+    f1_denom = precision + recall
+    f1 = np.divide(
+        2 * precision * recall, f1_denom,
+        out=np.zeros_like(f1_denom, dtype=float),
+        where=f1_denom != 0,
+    )
+
+    # overall accuracy (micro): 全クラス合計での正答率
+    total_tp = tp.sum()
+    total_samples = cm.sum()
+    accuracy = float(total_tp / total_samples) if total_samples > 0 else 0.0
 
     return {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
+        "accuracy": accuracy,      # scalar
+        "precision": precision,    # per-class
+        "recall": recall,          # per-class
+        "f1": f1,                  # per-class
     }
 
 
@@ -68,18 +82,32 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     stats_rows = []
     metric_names = ["accuracy", "precision", "recall", "f1"]
     for name in metric_names:
-        if name not in per_fold_metrics: continue
-        
+        if name not in per_fold_metrics:
+            continue
+
         stacked_values = np.array(per_fold_metrics[name])
-        means = np.mean(stacked_values, axis=0)
-        stds = np.std(stacked_values, axis=0)
-        for i in range(num_classes):
+
+        if name == "accuracy":
+            # accuracy は各フォールドごとの scalar → 1次元配列
+            mean = float(np.mean(stacked_values))
+            std = float(np.std(stacked_values))
             stats_rows.append({
                 "metric": f"test_{name}",
-                "class_label": f"class_{i}",
-                "mean": means[i],
-                "std": stds[i]
+                "class_label": "overall",  # 全体 accuracy
+                "mean": mean,
+                "std": std,
             })
+        else:
+            # precision, recall, f1 は per-class → (num_folds, num_classes)
+            means = np.mean(stacked_values, axis=0)
+            stds = np.std(stacked_values, axis=0)
+            for i in range(num_classes):
+                stats_rows.append({
+                    "metric": f"test_{name}",
+                    "class_label": f"class_{i}",
+                    "mean": means[i],
+                    "std": stds[i],
+                })
 
     stats_df = pd.DataFrame(stats_rows)
     stats_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,9 +134,8 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     
     report_df = pd.DataFrame(report_data, index=class_names)
     
-    accuracy = np.sum(np.diag(total_cm)) / np.sum(total_cm) if np.sum(total_cm) > 0 else 0.0
-    report_df.loc['accuracy'] = [np.nan, np.nan, accuracy, np.sum(support)]
-    
+    # total_cm に対する overall accuracy（micro）
+    accuracy = report_metrics["accuracy"]    report_df.loc['accuracy'] = [np.nan, np.nan, accuracy, np.sum(support)]    
     macro_avg = report_df.loc[class_names].mean()
     macro_avg['support'] = np.sum(support)
     report_df.loc['macro avg'] = macro_avg
