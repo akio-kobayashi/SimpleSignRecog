@@ -107,7 +107,7 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
 
     # クラスごと指標の行を作成
     per_class_metric_names = ["accuracy_per_class", "precision", "recall", "f1"]
-    for name in per_class_metrics_names:
+    for name in per_class_metric_names:
         if name not in per_fold_metrics:
             continue
 
