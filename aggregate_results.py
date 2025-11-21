@@ -135,7 +135,8 @@ def aggregate_results(results_dir: Path, config: dict, stats_output_path: Path, 
     report_df = pd.DataFrame(report_data, index=class_names)
     
     # total_cm に対する overall accuracy（micro）
-    accuracy = report_metrics["accuracy"]    report_df.loc['accuracy'] = [np.nan, np.nan, accuracy, np.sum(support)]    
+    accuracy = report_metrics["accuracy"]
+    report_df.loc['accuracy'] = [np.nan, np.nan, accuracy, np.sum(support)]    
     macro_avg = report_df.loc[class_names].mean()
     macro_avg['support'] = np.sum(support)
     report_df.loc['macro avg'] = macro_avg
