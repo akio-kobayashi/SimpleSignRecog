@@ -78,11 +78,23 @@ def get_feature_dim(feature_config: dict) -> int:
         # 既存のパイプラインの場合
         return EXISTING_PIPELINE_DIM
 
-def main(config: dict, checkpoint_path: str | None = None):
+def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None):
     """
     K分割交差検証（K-Fold Cross-Validation）を用いたメインの学習パイプライン。
     """
-    # --- 0. シードの設定と特徴量次元数の計算 ---
+    # --- 0. コマンドライン引数でconfigを上書き ---
+    if args.num_folds is not None:
+        config['data']['num_folds'] = args.num_folds
+    if args.cm_output_dir is not None:
+        config['output']['cm_output_dir'] = args.cm_output_dir
+    if args.augment_flip is not None:
+        config['data']['augmentation']['augment_flip'] = (args.augment_flip == 'true')
+    if args.augment_rotate is not None:
+        config['data']['augmentation']['augment_rotate'] = (args.augment_rotate == 'true')
+    if args.augment_noise is not None:
+        config['data']['augmentation']['augment_noise'] = (args.augment_noise == 'true')
+
+    # --- シードの設定と特徴量次元数の計算 ---
     if "seed" in config:
         set_seed(config["seed"])
         print(f"--- 再現性のためにシードを {config['seed']} に設定しました ---")
@@ -306,6 +318,12 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("-c", "--config", type=str, default="config.yaml", help="YAML形式の設定ファイル")
     parser.add_argument("--checkpoint", type=str, default=None, help="モデルのチェックポイント（CVでは非推奨）")
+    # --- 実験用の引数を追加 ---
+    parser.add_argument("--num-folds", type=int, default=None, help="CVの分割数 (configを上書き)")
+    parser.add_argument("--cm-output-dir", type=str, default=None, help="混同行列の出力先ディレクトリ (configを上書き)")
+    parser.add_argument("--augment-flip", type=str, choices=['true', 'false'], default=None, help="左右反転Augmentationのオンオフ (configを上書き)")
+    parser.add_argument("--augment-rotate", type=str, choices=['true', 'false'], default=None, help="回転Augmentationのオンオフ (configを上書き)")
+    parser.add_argument("--augment-noise", type=str, choices=['true', 'false'], default=None, help="ノイズAugmentationのオンオフ (configを上書き)")
     args = parser.parse_args()
 
     # 高速な行列計算のためのPyTorch設定
@@ -316,5 +334,5 @@ if __name__ == "__main__":
         config = yaml.safe_load(yf)
 
     # メイン関数を実行
-    main(config, checkpoint_path=args.checkpoint)
+    main(config, args, checkpoint_path=args.checkpoint)
 

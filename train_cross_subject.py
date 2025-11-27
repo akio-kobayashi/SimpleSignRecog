@@ -44,6 +44,16 @@ def main(args):
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
+    # --- コマンドライン引数でconfigを上書き ---
+    if args.cm_output_dir is not None:
+        config['cross_subject']['cm_output_dir'] = args.cm_output_dir
+    if args.augment_flip is not None:
+        config['data']['augmentation']['augment_flip'] = (args.augment_flip == 'true')
+    if args.augment_rotate is not None:
+        config['data']['augmentation']['augment_rotate'] = (args.augment_rotate == 'true')
+    if args.augment_noise is not None:
+        config['data']['augmentation']['augment_noise'] = (args.augment_noise == 'true')
+
     pl.seed_everything(config.get('seed', 42))
 
     feature_dim = get_feature_dim(config.get('features', {}))
@@ -170,7 +180,11 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Cross-subject validation training script.")
-    parser.add_argument('-c', '--config', type=str, default='config.yaml',
-                        help='Path to the configuration file.')
+    parser.add_argument('-c', '--config', type=str, default='config.yaml', help='Path to the configuration file.')
+    # --- 実験用の引数を追加 ---
+    parser.add_argument("--cm-output-dir", type=str, default=None, help="混同行列の出力先ディレクトリ (configを上書き)")
+    parser.add_argument("--augment-flip", type=str, choices=['true', 'false'], default=None, help="左右反転Augmentationのオンオフ (configを上書き)")
+    parser.add_argument("--augment-rotate", type=str, choices=['true', 'false'], default=None, help="回転Augmentationのオンオフ (configを上書き)")
+    parser.add_argument("--augment-noise", type=str, choices=['true', 'false'], default=None, help="ノイズAugmentationのオンオフ (configを上書き)")
     args = parser.parse_args()
     main(args)
