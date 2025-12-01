@@ -9,7 +9,7 @@ EXPERIMENT_BASE_DIR="experiments"
 NUM_CLASSES=20
 # K-Foldの分割数
 K_FOLDS=5
-# configファイル
+# ベースとなるconfigファイル
 CONFIG_FILE="config.yaml"
 
 # --- 実験パターンの定義 ---
@@ -42,14 +42,13 @@ for (( i=0; i<${#EXPERIMENTS[@]}; i+=2 )); do
     echo "--- Running K-Fold CV (${K_FOLDS} folds) ---"
     # 学習の実行
     python train.py \
-        --config ${CONFIG_FILE} \
+        -c ${CONFIG_FILE} \
         --num-folds ${K_FOLDS} \
         ${AUG_ARGS} \
         --cm-output-dir ${CM_DIR_CV}
     
     # 集計の実行
     python aggregate_results.py ${CM_DIR_CV} \
-        --mode cv \
         --num-classes ${NUM_CLASSES} \
         --report-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CV}_report.csv" \
         --stats-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CV}_stats.csv"
@@ -61,14 +60,14 @@ for (( i=0; i<${#EXPERIMENTS[@]}; i+=2 )); do
     echo "--- Running Cross-Subject CV ---"
     # 学習の実行
     python train_cross_subject.py \
-        --config ${CONFIG_FILE} \
+        -c ${CONFIG_FILE} \
         ${AUG_ARGS} \
         --cm-output-dir ${CM_DIR_CS}
 
     # 集計の実行
     python aggregate_results.py ${CM_DIR_CS} \
-        --mode cs \
         --num-classes ${NUM_CLASSES} \
+        --mode cs \
         --report-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CS}_report.csv" \
         --stats-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CS}_stats.csv"
 

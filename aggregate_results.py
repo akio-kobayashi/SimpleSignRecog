@@ -1,5 +1,3 @@
-
-
 import argparse
 import pandas as pd
 import numpy as np
@@ -9,7 +7,6 @@ from collections import defaultdict
 def calculate_metrics_from_cm(cm: np.ndarray):
     """
     混同行列(Confusion Matrix)から各クラスの指標を計算する。
-    numpyのベクトル計算を用いて、ループをなくし、可読性と正確性を向上させる。
     """
     num_classes = cm.shape[0]
     
@@ -33,10 +30,9 @@ def calculate_metrics_from_cm(cm: np.ndarray):
         "f1": f1,
     }
 
-def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_output_path: Path, stats_output_path: Path | None):
+def aggregate_results(results_dir: Path, num_classes: int, report_output_path: Path, stats_output_path: Path):
     """
     保存された混同行列ファイルから、最終的な統計量とレポートを生成する。
-    --modeに応じて出力内容を切り替える。
     """
     print(f"--- '{results_dir}' から混同行列ファイルを読み込んでいます ---")
     
@@ -50,7 +46,7 @@ def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_out
 
     class_names = [f"class_{i}" for i in range(num_classes)]
 
-    # --- 1. 全体を統合した最終レポートを計算 (両方のモードで必須) ---
+    # --- 1. 全体を統合した最終レポートを計算 ---
     print("\n--- 全体を統合した最終レポートを計算しています ---")
     
     total_cm = np.sum(all_cms, axis=0)
@@ -91,84 +87,77 @@ def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_out
     print(f"全体の詳細レポートを保存しました: {report_output_path}")
     print(report_df)
 
-    # --- 2. グラフ描画用の統計量 (csモードのみ) ---
-    if mode == 'cs':
-        print("\n--- [csモード] グラフ描画用の統計量（平均・標準偏差）を計算しています ---")
+    # --- 2. グラフ描画用の統計量を計算 ---
+    print(f"\n--- グラフ描画用の統計量（平均・標準偏差）を計算しています ---")
+    
+    per_fold_metrics = defaultdict(list)
+    for cm in all_cms:
+        if cm.shape[0] != num_classes or cm.shape[1] != num_classes:
+            print(f"警告: 予期しない形状の混同行列をスキップします: {cm.shape}")
+            continue
+        metrics = calculate_metrics_from_cm(cm)
+        for name, values in metrics.items():
+            per_fold_metrics[name].append(values)
+
+    stats_rows = []
+    metric_names = ["accuracy", "precision", "recall", "f1"]
+    num_folds = len(all_cms)
+
+    # クラスごとの統計量を計算
+    for name in metric_names:
+        if name not in per_fold_metrics: continue
         
-        per_fold_metrics = defaultdict(list)
-        for cm in all_cms:
-            if cm.shape[0] != num_classes or cm.shape[1] != num_classes:
-                print(f"警告: 予期しない形状の混同行列をスキップします: {cm.shape}")
-                continue
-            metrics = calculate_metrics_from_cm(cm)
-            for name, values in metrics.items():
-                per_fold_metrics[name].append(values)
-
-        stats_rows = []
-        metric_names = ["accuracy", "precision", "recall", "f1"]
-        num_folds = len(all_cms)
-
-        # クラスごとの統計量を計算
-        for name in metric_names:
-            if name not in per_fold_metrics: continue
-            
-            stacked_values = np.array(per_fold_metrics[name])
-            means = np.mean(stacked_values, axis=0)
-            stds = np.std(stacked_values, axis=0)
-            for i in range(num_classes):
-                row = {
-                    "metric": f"test_{name}",
-                    "class_label": f"class_{i}",
-                    "mean": means[i],
-                    "std": stds[i]
-                }
-                for fold_idx in range(num_folds):
-                    row[f"fold_{fold_idx}"] = stacked_values[fold_idx, i]
-                stats_rows.append(row)
-
-        # 全体（マクロ平均）の統計量を計算
-        for name in metric_names:
-            if name not in per_fold_metrics: continue
-
-            stacked_values = np.array(per_fold_metrics[name])
-            overall_scores_per_fold = np.mean(stacked_values, axis=1)
-            
-            mean_of_overalls = np.mean(overall_scores_per_fold)
-            std_of_overalls = np.std(overall_scores_per_fold)
-
+        stacked_values = np.array(per_fold_metrics[name])
+        means = np.mean(stacked_values, axis=0)
+        stds = np.std(stacked_values, axis=0)
+        for i in range(num_classes):
             row = {
                 "metric": f"test_{name}",
-                "class_label": "overall",
-                "mean": mean_of_overalls,
-                "std": std_of_overalls
+                "class_label": f"class_{i}",
+                "mean": means[i],
+                "std": stds[i]
             }
-            for fold_idx, score in enumerate(overall_scores_per_fold):
-                row[f"fold_{fold_idx}"] = score
+            for fold_idx in range(num_folds):
+                row[f"fold_{fold_idx}"] = stacked_values[fold_idx, i]
             stats_rows.append(row)
 
-        stats_df = pd.DataFrame(stats_rows)
-        stats_output_path.parent.mkdir(parents=True, exist_ok=True)
-        stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
-        print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
-        print(stats_df)
-    elif mode == 'cv':
-        print("\n--- [cvモード] 統計量ファイルは生成されません ---")
+    # 全体（マクロ平均）の統計量を計算
+    for name in metric_names:
+        if name not in per_fold_metrics: continue
+
+        stacked_values = np.array(per_fold_metrics[name])
+        overall_scores_per_fold = np.mean(stacked_values, axis=1)
+        
+        mean_of_overalls = np.mean(overall_scores_per_fold)
+        std_of_overalls = np.std(overall_scores_per_fold)
+
+        row = {
+            "metric": f"test_{name}",
+            "class_label": "overall",
+            "mean": mean_of_overalls,
+            "std": std_of_overalls
+        }
+        for fold_idx, score in enumerate(overall_scores_per_fold):
+            row[f"fold_{fold_idx}"] = score
+        stats_rows.append(row)
+
+    stats_df = pd.DataFrame(stats_rows)
+    stats_output_path.parent.mkdir(parents=True, exist_ok=True)
+    stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
+    print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
+    print(stats_df)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="混同行列ファイルを集計し、最終的なレポートと統計量を生成します。")
     parser.add_argument("results_dir", type=str, help="混同行列CSVが保存されているディレクトリ")
-    parser.add_argument("--mode", type=str, required=True, choices=['cv', 'cs'], help="実行モード ('cv' for K-Fold/LOO, 'cs' for cross-subject)")
     parser.add_argument("--num-classes", type=int, required=True, help="クラス数")
     parser.add_argument("--report-out", type=str, required=True, help="詳細レポートCSVの出力パス")
-    parser.add_argument("--stats-out", type=str, default=None, help="統計量CSVの出力パス (csモードでのみ使用)")
+    parser.add_argument("--stats-out", type=str, required=True, help="統計量CSVの出力パス")
     args = parser.parse_args()
-
-    if args.mode == 'cs' and args.stats_out is None:
-        parser.error("--stats-out は --mode cs の場合に必須です。")
 
     results_path = Path(args.results_dir)
     if not results_path.is_dir():
         print(f"エラー: 指定されたディレクトリが見つかりません: {results_path}")
     else:
-        aggregate_results(results_path, args.num_classes, args.mode, Path(args.report_out), Path(args.stats_out) if args.stats_out else None)
+        aggregate_results(results_path, args.num_classes, Path(args.report_out), Path(args.stats_out))
