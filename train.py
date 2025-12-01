@@ -279,8 +279,8 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
         num_classes = config['model']['num_classes']
         cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
         
-        # 出力先ディレクトリをconfigから取得
-        output_dir = Path(config.get("output", {}).get("cm_output_dir", "results/confusion_matrices_cv"))
+        # 出力先ディレクトリをconfigから取得 (引数で上書き済み)
+        output_dir = Path(config["output"]["cm_output_dir"])
         output_dir.mkdir(exist_ok=True, parents=True)
         fold_results_path = output_dir / f"fold_{fold}_cm.csv"
 
@@ -297,7 +297,7 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
 
     # --- 3. 完了メッセージ ---
     print("\n===== 全てのフォールドの学習とテストが完了しました =====")
-    cm_output_dir = Path(config.get("output", {}).get("cm_output_dir", "results/confusion_matrices_cv"))
+    cm_output_dir = Path(config["output"]["cm_output_dir"])
     print(f"各フォールドの混同行列が '{cm_output_dir}' に保存されました。")
     print("\n次のステップ:")
     print(f"python aggregate_results.py {cm_output_dir} --config {args.config}")
@@ -320,7 +320,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default=None, help="モデルのチェックポイント（CVでは非推奨）")
     # --- 実験用の引数を追加 ---
     parser.add_argument("--num-folds", type=int, default=None, help="CVの分割数 (configを上書き)")
-    parser.add_argument("--cm-output-dir", type=str, default=None, help="混同行列の出力先ディレクトリ (configを上書き)")
+    parser.add_argument("--cm-output-dir", type=str, required=True, help="混同行列の出力先ディレクトリ")
     parser.add_argument("--augment-flip", type=str, choices=['true', 'false'], default=None, help="左右反転Augmentationのオンオフ (configを上書き)")
     parser.add_argument("--augment-rotate", type=str, choices=['true', 'false'], default=None, help="回転Augmentationのオンオフ (configを上書き)")
     parser.add_argument("--augment-noise", type=str, choices=['true', 'false'], default=None, help="ノイズAugmentationのオンオフ (configを上書き)")

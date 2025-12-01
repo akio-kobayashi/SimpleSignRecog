@@ -162,7 +162,7 @@ def main(args):
         num_classes = config['model']['num_classes']
         cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
         
-        output_dir = Path(cs_config.get("cm_output_dir", "results/confusion_matrices_cs"))
+        output_dir = Path(cs_config["cm_output_dir"])
         output_dir.mkdir(exist_ok=True, parents=True)
         fold_results_path = output_dir / f"cs_fold_{i}_cm.csv"
 
@@ -171,7 +171,7 @@ def main(args):
 
     # --- 全てのフォールドが完了 ---
     print("\n===== 全てのフォールドの学習とテストが完了しました =====")
-    cm_output_dir = Path(cs_config.get("cm_output_dir", "results/confusion_matrices_cs"))
+    cm_output_dir = Path(cs_config["cm_output_dir"])
     print(f"各フォールドの混同行列が '{cm_output_dir}' に保存されました。")
     print("\n次のステップ:")
     print(f"python aggregate_results.py {cm_output_dir} --config {args.config}")
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Cross-subject validation training script.")
     parser.add_argument('-c', '--config', type=str, default='config.yaml', help='Path to the configuration file.')
     # --- 実験用の引数を追加 ---
-    parser.add_argument("--cm-output-dir", type=str, default=None, help="混同行列の出力先ディレクトリ (configを上書き)")
+    parser.add_argument("--cm-output-dir", type=str, required=True, help="混同行列の出力先ディレクトリ")
     parser.add_argument("--augment-flip", type=str, choices=['true', 'false'], default=None, help="左右反転Augmentationのオンオフ (configを上書き)")
     parser.add_argument("--augment-rotate", type=str, choices=['true', 'false'], default=None, help="回転Augmentationのオンオフ (configを上書き)")
     parser.add_argument("--augment-noise", type=str, choices=['true', 'false'], default=None, help="ノイズAugmentationのオンオフ (configを上書き)")

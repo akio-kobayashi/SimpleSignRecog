@@ -17,7 +17,6 @@ def calculate_metrics_from_cm(cm: np.ndarray):
     fp = np.sum(cm, axis=0) - tp
     fn = np.sum(cm, axis=1) - tp
 
-    # 分母が0の場合は0とする
     precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=float), where=(tp + fp) != 0)
     recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) != 0)
     
@@ -92,10 +91,9 @@ def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_out
     print(f"全体の詳細レポートを保存しました: {report_output_path}")
     print(report_df)
 
-    # --- 2. グラフ描画用の統計量 (csモードとcvモードで処理を分岐) ---
-    # cvモードでも統計ファイルを生成する
-    if mode == 'cs' or mode == 'cv':
-        print(f"\n--- [{mode}モード] グラフ描画用の統計量（平均・標準偏差）を計算しています ---")
+    # --- 2. グラフ描画用の統計量 (csモードのみ) ---
+    if mode == 'cs':
+        print("\n--- [csモード] グラフ描画用の統計量（平均・標準偏差）を計算しています ---")
         
         per_fold_metrics = defaultdict(list)
         for cm in all_cms:
@@ -153,6 +151,9 @@ def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_out
         stats_df.to_csv(stats_output_path, index=False, float_format='%.4f')
         print(f"グラフ描画用の統計量を保存しました: {stats_output_path}")
         print(stats_df)
+    elif mode == 'cv':
+        print("\n--- [cvモード] 統計量ファイルは生成されません ---")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="混同行列ファイルを集計し、最終的なレポートと統計量を生成します。")
@@ -160,11 +161,14 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, required=True, choices=['cv', 'cs'], help="実行モード ('cv' for K-Fold/LOO, 'cs' for cross-subject)")
     parser.add_argument("--num-classes", type=int, required=True, help="クラス数")
     parser.add_argument("--report-out", type=str, required=True, help="詳細レポートCSVの出力パス")
-    parser.add_argument("--stats-out", type=str, required=True, help="統計量CSVの出力パス")
+    parser.add_argument("--stats-out", type=str, default=None, help="統計量CSVの出力パス (csモードでのみ使用)")
     args = parser.parse_args()
+
+    if args.mode == 'cs' and args.stats_out is None:
+        parser.error("--stats-out は --mode cs の場合に必須です。")
 
     results_path = Path(args.results_dir)
     if not results_path.is_dir():
         print(f"エラー: 指定されたディレクトリが見つかりません: {results_path}")
     else:
-        aggregate_results(results_path, args.num_classes, args.mode, Path(args.report_out), Path(args.stats_out))
+        aggregate_results(results_path, args.num_classes, args.mode, Path(args.report_out), Path(args.stats_out) if args.stats_out else None)

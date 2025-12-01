@@ -91,9 +91,6 @@ output:
   rf_results_path: results_rf.csv
   xgboost_results_path: results_xgboost.csv
   nn_results_path: results_nn.csv
-  cv_stats_path: "results_cv_stats.csv" # 統計量CSVの出力パス
-  classification_report_path: "classification_report.csv" # 全体評価レポートの出力パス
-  cm_output_dir: "results/confusion_matrices_cv" # CVの混同行列の出力先
 
 
 # --- 話者間交-差検証用の設定 (新規追加) ---
@@ -103,9 +100,7 @@ cross_subject:
       source_landmark_dir: "."
     - metadata_path: "output_data/speaker_B_metadata.csv"
       source_landmark_dir: "."
-  # 出力ファイル名
-  output_stats_path: "results_cross_subject_stats.csv"
-  cm_output_dir: "results/confusion_matrices_cs" # 話者間CVの混同行列の出力先
+
 
 # --- EarlyStoppingの設定 ---
 early_stopping:
