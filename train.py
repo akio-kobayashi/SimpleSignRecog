@@ -123,6 +123,7 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
 
     # --- 2. 交差検証 (Cross-Validation) の設定 ---
     num_folds = data_config.get('num_folds', 5)
+    print(f"DEBUG: `num_folds` is set to {num_folds}") # デバッグ用print文
     is_loocv = num_folds <= 1
 
     if not is_loocv:
