@@ -8,9 +8,11 @@ EXPERIMENT_BASE_DIR="experiments"
 # クラス数
 NUM_CLASSES=20
 # K-Foldの分割数
-K_FOLDS=5
+K_FOLDS=-1
 # ベースとなるconfigファイル
-CONFIG_FILE="config.yaml"
+CONFIG_FILE_K=kobayashi_cv.yaml
+CONFIG_FILE_Y=yamashita_cv.yaml
+CONFIG_CR_FILE=cross.yaml
 
 # --- 実験パターンの定義 ---
 # ここで試したいAugmentationの組み合わせを定義します。
@@ -34,25 +36,42 @@ for (( i=0; i<${#EXPERIMENTS[@]}; i+=2 )); do
     echo ">> Augmentations: ${AUG_ARGS}"
     echo "=================================================="
 
-    # --- 1. train.py (K-Fold CV) の実行 ---
-    MODE_CV="cv_kfold"
-    # この実験の混同行列の保存先 (例: experiments/flip_only/cv_kfold)
-    CM_DIR_CV="${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CV}"
+    for SPEAKER in kobayashi yamashita; do
+        echo "--- Processing for speaker: $SPEAKER ---"
+        case "$SPEAKER" in
+            kobayashi)
+		CONFIG_FILE="$CONFIG_FILE_K"
+		;;
+            yamashita)
+		CONFIG_FILE="$CONFIG_FILE_Y"
+		;;
+            *)
+		# 予期しない話者の場合はエラーとして終了
+		echo "Error: Unknown speaker '$SPEAKER'"
+		exit 1
+		;;
+	esac
+	echo "Using config file: $CONFIG_FILE"
+	
+	# --- 1. train.py (K-Fold CV) の実行 ---
+	MODE_CV="cv_kfold"
+	# この実験の混同行列の保存先 (例: experiments/flip_only/cv_kfold)
+	CM_DIR_CV="${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${SPEAKER}/${MODE_CV}"
     
-    echo "--- Running K-Fold CV (${K_FOLDS} folds) ---"
-    # 学習の実行
-    python train.py \
-        -c ${CONFIG_FILE} \
-        --num-folds ${K_FOLDS} \
-        ${AUG_ARGS} \
-        --cm-output-dir ${CM_DIR_CV}
+	echo "--- Running K-Fold CV (${K_FOLDS} folds) ---"
+	# 学習の実行
+	python train.py \
+               -c ${CONFIG_FILE} \
+               --num-folds ${K_FOLDS} \
+               ${AUG_ARGS} \
+               --cm-output-dir ${CM_DIR_CV}
     
-    # 集計の実行
-    python aggregate_results.py ${CM_DIR_CV} \
-        --num-classes ${NUM_CLASSES} \
-        --report-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CV}_report.csv" \
-        --stats-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CV}_stats.csv"
-
+	# 集計の実行
+	python aggregate_results.py ${CM_DIR_CV} \
+	        --num-classes ${NUM_CLASSES} \
+	        --report-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${SPEAKER}/${MODE_CV}_report.csv" \
+	        --stats-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${SPEAKER}/${MODE_CV}_stats.csv"
+    done 
     # --- 2. train_cross_subject.py (話者間CV) の実行 ---
     MODE_CS="cross_subject"
     CM_DIR_CS="${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CS}"
@@ -60,7 +79,7 @@ for (( i=0; i<${#EXPERIMENTS[@]}; i+=2 )); do
     echo "--- Running Cross-Subject CV ---"
     # 学習の実行
     python train_cross_subject.py \
-        -c ${CONFIG_FILE} \
+        -c ${CONFIG_CR_FILE} \
         ${AUG_ARGS} \
         --cm-output-dir ${CM_DIR_CS}
 
