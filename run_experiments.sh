@@ -69,8 +69,8 @@ for (( i=0; i<${#EXPERIMENTS[@]}; i+=2 )); do
 	# 集計の実行
 	python aggregate_results.py ${CM_DIR_CV} \
 	        --num-classes ${NUM_CLASSES} \
-	        --report-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${SPEAKER}/${MODE_CV}_report.csv" \
-	        --stats-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${SPEAKER}/${MODE_CV}_stats.csv"
+                --mode cv \
+	        --report-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${SPEAKER}/${MODE_CV}_report.csv"
     done 
     # --- 2. train_cross_subject.py (話者間CV) の実行 ---
     MODE_CS="cross_subject"
