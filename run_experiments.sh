@@ -124,7 +124,6 @@ for (( i=0; i<${#EXPERIMENTS[@]}; i+=2 )); do
             --report-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CS}_report.csv" \
             --stats-out "${EXPERIMENT_BASE_DIR}/${EXP_NAME}/${MODE_CS}_stats.csv"
     fi
-    fi
 
 done
 
