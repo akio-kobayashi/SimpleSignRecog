@@ -183,46 +183,13 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
     for fold, (train_val_indices, test_indices) in enumerate(cv_iterator):
         print(f"\n===== 分割 {fold + 1} / {num_folds} =====")
 
-        # --- 2a. この分割でのデータ分割 (Hybrid LOO) ---
+        # --- 2a. この分割でのデータ分割 (Hybrid LOO / 検証なし) ---
         test_df = metadata_df.iloc[test_indices].reset_index(drop=True)
-        train_val_df = metadata_df.iloc[train_val_indices].reset_index(drop=True)
-
-        # テストサンプルの話者IDを取得
-        test_subject_id = test_df.iloc[0]['subject_id']
-
-        # 同じ話者の残りのデータを抽出
-        same_subject_df = train_val_df[train_val_df['subject_id'] == test_subject_id].reset_index(drop=True)
-
-        # 他の話者の全データを抽出
-        other_subjects_df = train_val_df[train_val_df['subject_id'] != test_subject_id].reset_index(drop=True)
-
-        # 同じ話者のデータから検証セットを作成
-        if not same_subject_df.empty:
-            # 層化分割を試みる
-            stratify_col = same_subject_df['class_label'] if len(same_subject_df['class_label'].unique()) > 1 else None
-            # 検証スプリットがデータ数より大きい場合に対処
-            val_split_ratio = data_config['validation_split_ratio']
-            if len(same_subject_df) * val_split_ratio < 1 and len(same_subject_df) > 0:
-                val_split_ratio = 1.0 / len(same_subject_df)
-            
-            if val_split_ratio > 0:
-                train_from_same_subject_df, val_df = train_test_split(
-                    same_subject_df,
-                    test_size=val_split_ratio,
-                    random_state=config.get('seed', 42),
-                    stratify=stratify_col
-                )
-                val_df = val_df.reset_index(drop=True)
-            else:
-                train_from_same_subject_df = same_subject_df
-                val_df = pd.DataFrame()
-        else:
-            # 同じ話者のデータが他にない場合
-            train_from_same_subject_df = pd.DataFrame()
-            val_df = pd.DataFrame()
-
-        # 最終的な学習データは「他の話者の全データ」＋「同じ話者の残り(検証で使わなかった分)」
-        train_df = pd.concat([other_subjects_df, train_from_same_subject_df], ignore_index=True)
+        # テストサンプル以外は全て学習データとする
+        train_df = metadata_df.iloc[train_val_indices].reset_index(drop=True)
+        
+        # 検証データは空にする
+        val_df = pd.DataFrame(columns=train_df.columns)
 
         print(f"訓練: {len(train_df)}, 検証: {len(val_df)}, テスト: {len(test_df)}")
 
@@ -296,15 +263,19 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
         # dirpath以外の設定をconfigから取得
         checkpoint_conf = {k: v for k, v in config["checkpoint"].items() if k != 'dirpath'}
         
+        # LOOCVでは検証セットがないため、val_lossを監視しない
+        if is_loocv:
+            checkpoint_conf['monitor'] = None
+
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             dirpath=str(fold_checkpoint_dir),
             **checkpoint_conf,
-            filename="{epoch}-{val_loss:.2f}"
+            filename="{epoch}-last" # ファイル名を調整
         )
 
-        # EarlyStoppingコールバックを初期化
+        # EarlyStoppingコールバックを初期化 (LOOCVでは無効)
         callbacks = [checkpoint_callback]
-        if "early_stopping" in config:
+        if not is_loocv and "early_stopping" in config:
             early_stopping_callback = EarlyStopping(**config["early_stopping"])
             callbacks.append(early_stopping_callback)
 
@@ -324,7 +295,10 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
 
         # --- 2d. この分割での訓練とテスト ---
         print(f"--- 分割 {fold + 1} の訓練を開始します ---")
-        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+        if is_loocv:
+            trainer.fit(model, train_dataloaders=train_loader)
+        else:
+            trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
         print(f"--- 分割 {fold + 1} のテストを実行します ---")
 
@@ -334,7 +308,9 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
         model.posteriogram_dir = Path(trainer.log_dir) / "posteriograms"
 
         # 最良のモデル（val_lossが最小）を使ってテストを実行
-        trainer.test(model, dataloaders=test_loader, ckpt_path='best')
+        # LOOCVではvalセットがないため、'last' ckpt を使う
+        ckpt_path = 'last' if is_loocv else 'best'
+        trainer.test(model, dataloaders=test_loader, ckpt_path=ckpt_path)
 
         # --- 2e. この分割の結果を収集 ---
         y_true = model.test_labels.cpu().numpy()
