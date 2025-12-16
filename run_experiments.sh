@@ -11,7 +11,7 @@ echo ""
 
 # --- 基本設定 ---
 # 全ての実験結果を保存する親ディレクトリ
-EXPERIMENT_BASE_DIR="experiments"
+EXPERIMENT_BASE_DIR="/srv/research/snapshot/experiments"
 # クラス数
 NUM_CLASSES=20
 # K-Foldの分割数
