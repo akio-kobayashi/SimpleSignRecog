@@ -153,16 +153,20 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
         train_val_df = metadata_df.iloc[train_val_indices].reset_index(drop=True)
         test_df = metadata_df.iloc[test_indices].reset_index(drop=True)
 
-        # 訓練・検証データをさらに訓練用と検証用に分割
-        train_df, val_df = train_test_split(
-            train_val_df,
-            test_size=data_config['validation_split_ratio'],
-            random_state=config.get('seed', 42),
-            stratify=train_val_df['class_label'] # クラスの比率を保って分割
-        )
-
-        train_df = train_df.reset_index(drop=True)
-        val_df = val_df.reset_index(drop=True)
+        if is_loocv:
+            # LOOモードでは、検証セットを作成せず、全てを学習に使用する
+            train_df = train_val_df
+            val_df = pd.DataFrame(columns=train_df.columns)
+        else:
+            # K-Foldモードでは、従来通り訓練・検証に分割
+            train_df, val_df = train_test_split(
+                train_val_df,
+                test_size=data_config['validation_split_ratio'],
+                random_state=config.get('seed', 42),
+                stratify=train_val_df['class_label'] # クラスの比率を保って分割
+            )
+            train_df = train_df.reset_index(drop=True)
+            val_df = val_df.reset_index(drop=True)
 
         print(f"訓練: {len(train_df)}, 検証: {len(val_df)}, テスト: {len(test_df)}")
 
@@ -232,15 +236,22 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
         # dirpath以外の設定をconfigから取得
         checkpoint_conf = {k: v for k, v in config["checkpoint"].items() if k != 'dirpath'}
         
+        # LOOCVでは検証セットがないため、val_lossを監視しない
+        if is_loocv:
+            checkpoint_conf['monitor'] = None
+            filename = "{epoch}-last"
+        else:
+            filename = "{epoch}-{val_loss:.2f}"
+
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
             dirpath=str(fold_checkpoint_dir),
             **checkpoint_conf,
-            filename="{epoch}-{val_loss:.2f}"
+            filename=filename
         )
 
-        # EarlyStoppingコールバックを初期化
+        # EarlyStoppingコールバックを初期化 (LOOCVでは無効)
         callbacks = [checkpoint_callback]
-        if "early_stopping" in config:
+        if not is_loocv and "early_stopping" in config:
             early_stopping_callback = EarlyStopping(**config["early_stopping"])
             callbacks.append(early_stopping_callback)
 
@@ -260,7 +271,10 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
 
         # --- 2d. この分割での訓練とテスト ---
         print(f"--- 分割 {fold + 1} の訓練を開始します ---")
-        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+        if is_loocv:
+            trainer.fit(model, train_dataloaders=train_loader)
+        else:
+            trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
         print(f"--- 分割 {fold + 1} のテストを実行します ---")
 
@@ -270,24 +284,28 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
         model.posteriogram_dir = Path(trainer.log_dir) / "posteriograms"
 
         # 最良のモデル（val_lossが最小）を使ってテストを実行
-        trainer.test(model, dataloaders=test_loader, ckpt_path='best')
+        # LOOCVではvalセットがないため、'last' ckpt を使う
+        ckpt_path = 'last' if is_loocv else 'best'
+        trainer.test(model, dataloaders=test_loader, ckpt_path=ckpt_path)
 
-        # --- 2e. このフォールドの混同行列を計算・保存 ---
+        # --- 2e. この分割の結果を収集 ---
         y_true = model.test_labels.cpu().numpy()
         y_pred = model.test_preds.cpu().numpy()
-        
-        # 混同行列を計算
-        num_classes = config['model']['num_classes']
-        cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
-        
-        # 出力先ディレクトリをconfigから取得 (引数で上書き済み)
-        output_dir = Path(config["output"]["cm_output_dir"])
-        output_dir.mkdir(exist_ok=True, parents=True)
-        fold_results_path = output_dir / f"fold_{fold}_cm.csv"
 
-        # 混同行列をCSVとして保存
-        pd.DataFrame(cm).to_csv(fold_results_path, index=False, header=False)
-        print(f"混同行列を保存しました: {fold_results_path}")
+        if is_loocv:
+            # LOOCVの場合、結果をリストに蓄積
+            if len(y_true) > 0:
+                all_labels.extend(y_true)
+                all_preds.extend(y_pred)
+        else:
+            # K-Foldの場合、各フォールドの混同行列を保存
+            num_classes = config['model']['num_classes']
+            cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
+            output_dir = Path(config["output"]["cm_output_dir"])
+            output_dir.mkdir(exist_ok=True, parents=True)
+            fold_results_path = output_dir / f"fold_{fold}_cm.csv"
+            pd.DataFrame(cm).to_csv(fold_results_path, index=False, header=False)
+            print(f"混同行列を保存しました: {fold_results_path}")
 
         # WERの結果を収集 (これはSolver内で計算されるため、ここで収集)
         if hasattr(model, 'wer_results') and not model.wer_results.empty:
@@ -296,7 +314,27 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
             all_fold_wer_results.append(model.wer_results)
 
 
-    # --- 3. 完了メッセージ ---
+    # --- 3. LOOの結果を集計・保存 ---
+    if is_loocv and all_labels:
+        print("\n--- LOOCV 結果集計 ---")
+        output_dir = Path(config["output"]["cm_output_dir"])
+        output_dir.mkdir(exist_ok=True, parents=True)
+        num_classes = config['model']['num_classes']
+
+        # 全体の精度を計算
+        y_true = np.array(all_labels)
+        y_pred = np.array(all_preds)
+        accuracy = np.mean(y_true == y_pred)
+        print(f"Total Accuracy: {accuracy:.4f}")
+
+        # 全体の混同行列を計算・保存
+        cm_total = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
+        cm_total_path = output_dir / "cm_total.csv"
+        pd.DataFrame(cm_total).to_csv(cm_total_path, index=False, header=False)
+        print(f"  - 全体の混同行列を保存: {cm_total_path}")
+
+
+    # --- 4. 完了メッセージ ---
     print("\n===== 全てのフォールドの学習とテストが完了しました =====")
     cm_output_dir = Path(config["output"]["cm_output_dir"])
     print(f"各フォールドの混同行列が '{cm_output_dir}' に保存されました。")

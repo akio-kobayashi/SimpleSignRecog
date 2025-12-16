@@ -33,16 +33,25 @@ def calculate_metrics_from_cm(cm: np.ndarray):
         "f1": f1,
     }
 
-def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_output_path: Path, stats_output_path: Path | None):
+def aggregate_results(results_dir: Path, num_classes: int, mode: str, report_output_path: Path, stats_output_path: Path | None, target_file: str | None):
     """
     保存された混同行列ファイルから、最終的な統計量とレポートを生成する。
     --modeに応じて出力内容を切り替える。
     """
     print(f"--- '{results_dir}' から混同行列ファイルを読み込んでいます ---")
     
-    cm_files = sorted(results_dir.glob("*_cm.csv"))
+    if target_file:
+        target_path = results_dir / target_file
+        if not target_path.exists():
+            print(f"エラー: 指定されたファイルが見つかりません: {target_path}")
+            return
+        cm_files = [target_path]
+        print(f"対象ファイル: {target_path}")
+    else:
+        cm_files = sorted(results_dir.glob("*_cm.csv"))
+
     if not cm_files:
-        print(f"エラー: '{results_dir}' 内に '*_cm.csv' ファイルが見つかりません。")
+        print(f"エラー: '{results_dir}' 内に集計対象のファイルが見つかりません。")
         return
 
     all_cms = [pd.read_csv(file, header=None).to_numpy() for file in cm_files]
@@ -166,6 +175,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, required=True, choices=['cv', 'cs'], help="実行モード ('cv' for K-Fold/LOO, 'cs' for cross-subject)")
     parser.add_argument("--report-out", type=str, required=True, help="詳細レポートCSVの出力パス")
     parser.add_argument("--stats-out", type=str, default=None, help="統計量CSVの出力パス (csモードでのみ使用)")
+    parser.add_argument("--target-file", type=str, default=None, help="集計対象の特定のファイル名 (例: cm_total.csv)")
     # --- num_classesの取得方法を柔軟に ---
     parser.add_argument("--config", type=str, default=None, help="YAML形式の設定ファイル（num_classesの取得に利用）")
     parser.add_argument("--num-classes", type=int, default=None, help="クラス数 (configより優先)")
@@ -196,5 +206,5 @@ if __name__ == "__main__":
     if not results_path.is_dir():
         print(f"エラー: 指定されたディレクトリが見つかりません: {results_path}")
     else:
-        aggregate_results(results_path, num_classes, args.mode, Path(args.report_out), Path(args.stats_out) if args.stats_out else None)
+        aggregate_results(results_path, num_classes, args.mode, Path(args.report_out), Path(args.stats_out) if args.stats_out else None, args.target_file)
 
