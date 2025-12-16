@@ -135,21 +135,23 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
 
     # --- 1. 全データセットの読み込み ---
     print("--- 全話者のデータセットを読み込んでいます ---")
-    hybrid_loo_config = config.get('hybrid_loo')
-    if not hybrid_loo_config or 'subjects' not in hybrid_loo_config:
-        raise ValueError("`hybrid_loo.subjects` section not found in config file.")
-
     all_dfs = []
-    for i, subject_info in enumerate(hybrid_loo_config['subjects']):
-        df = pd.read_csv(subject_info['metadata_path'])
+    # コマンドラインから渡された各設定ファイルをループ処理
+    for i, config_path in enumerate(args.config):
+        print(f"  - {config_path} を読み込み中...")
+        with open(config_path, 'r') as f:
+            subject_config = yaml.safe_load(f)
+        
+        data_info = subject_config['data']
+        df = pd.read_csv(data_info['metadata_path'])
         df['subject_id'] = i  # 話者IDを整数として追加
-        df['base_dir'] = subject_info['source_landmark_dir'] # データパスもDFに追加
+        df['base_dir'] = data_info['source_landmark_dir'] # データパスもDFに追加
         all_dfs.append(df)
 
     metadata_df = pd.concat(all_dfs, ignore_index=True)
-    print(f"--- {len(hybrid_loo_config['subjects'])} 名の話者から合計 {len(metadata_df)} 個のサンプルを読み込みました ---")
+    print(f"--- {len(args.config)} 名の話者から合計 {len(metadata_df)} 個のサンプルを読み込みました ---")
 
-    # この後の処理で 'base_dir' を使うため、data_config は使わない
+    # ベースconfigの 'data' セクションを継続して使用
     data_config = config['data']
     
     # クラスのインデックスとクラス名の対応表を作成（もしあれば）
