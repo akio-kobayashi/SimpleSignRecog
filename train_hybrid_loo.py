@@ -247,8 +247,18 @@ def main(config: dict, args: ArgumentParser, checkpoint_path: str | None = None)
 
         # データローダーの準備
         if data_config.get('use_bucketing', False):
-            # バケットサンプリング（似た長さのデータをミニバッチにする）を使用する場合
-            train_sampler = BucketBatchSampler(train_dataset, batch_size=data_config['batch_size'])
+            # BucketBatchSamplerは .df 属性を持つdatasetを期待するが、ConcatDatasetにはない。
+            # そのため、ソート済みの train_df を持つ代理オブジェクトを作成して渡す。
+            class SamplerProxy:
+                def __init__(self, df):
+                    self.df = df
+                def __len__(self):
+                    return len(self.df)
+
+            proxy_for_sampler = SamplerProxy(train_df)
+            train_sampler = BucketBatchSampler(proxy_for_sampler, batch_size=data_config['batch_size'])
+            
+            # DataLoaderには、実際のデータ取得のため、オリジナルのtrain_dataset(ConcatDataset)を渡す
             train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=data_processing, num_workers=4, worker_init_fn=seed_worker)
         else:
             # 通常のシャッフルを使用する場合
