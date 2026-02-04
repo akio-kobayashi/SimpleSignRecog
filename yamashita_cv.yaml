@@ -1,0 +1,110 @@
+# データ関連の設定
+seed: 42
+data:
+  metadata_path: /srv/research/subset/yamashita/metadata.csv
+  source_landmark_dir: /srv/research/corrected/yamashita/processed_data
+  num_folds: -1                  # K-Foldの分割数 (K)
+  validation_split_ratio: 0.1   # 学習データから検証データを切り出す割合
+  batch_size: 64
+  use_bucketing: true
+  augmentation:
+    augment_flip: true
+    augment_rotate: true
+    augment_noise: true
+    flip_prob: 0.5 # 左右反転の確率
+
+# 特徴量エンジニアリングの設定
+features:
+  # どの正規化手法を使うか: "current_wrist", "first_wrist", "normalize_landmarks", "canonical_normalize" or null
+  normalize_mode: "canonical_normalize"
+  # 論文ベースの特徴量を追加するか
+  paper_features:
+    speed: false
+    anthropometric: false
+    
+# モデルのアーキテクチャ設定
+model:
+  # --- 使用するモデルの指定 ---
+  # module_path: 使用するモデルクラスが定義されているファイルへのパス
+  # class_name: 使用するモデルのクラス名
+  module_path: "src.model"
+  class_name: "TwoStreamCNN"
+
+  # --- ST-GCNモデルを使用する場合の例 ---
+  #module_path: "src.stgcn_model"
+  #class_name: "STGCNModel"
+  # # ST-GCN用のハイパーパラメータ (TwoStreamCNNのパラメータは無視される)
+  #channels: 64
+  #dropout: 0.2
+  #num_blocks: 4
+  #temporal_kernel_size: 9
+
+  # --- TwoStreamCNN / 共通のハイパーパラメータ ---
+  input_dim: 386 # この値は train.py で features の設定に基づいて自動計算・上書きされます
+  num_classes: 20
+  channels: 128
+  dropout: 0.2
+  right_context_size: 0 # New: 畳み込みで考慮する未来のフレーム数。0で完全な因果畳み込み
+  # --- LSTM層のハイパーパラメータ ---
+  lstm_hidden_dim: 256
+  lstm_layers: 1
+  # --- CNNエンコーダのハイパーパラメータ ---
+  cnn_num_blocks: 3
+  loss_lambda: 0.0 # CTC損失の重み (total_loss = lambda * ctc_loss + (1 - lambda) * ce_loss)
+  report_target: 'ce' # 最終レポートの計算対象: 'ctc' または 'ce'
+  
+# 最適化手法の設定(RAdam)
+optimizer:
+  lr: 0.001
+
+# 学習率スケジューラの設定(OneCycleLR)
+scheduler:
+  max_lr: 0.001 #0.0001
+  # total_steps は train.py 内で自動計算されます
+
+# PyTorch Lightning Trainerの設定
+trainer:
+  metrics_average_mode: "macro" # "macro" or "weighted"
+  decode_method: "greedy" # "majority_vote" or "greedy" or "beam_search"
+  beam_width: 1 # beam searchの幅
+  max_epochs: 50
+  accelerator: auto
+  log_every_n_steps: 1
+  xgboost_params:
+    # その他のXGBoostパラメータもここに追加できます (例: n_estimators, learning_rate, max_depthなど)
+
+# モデルチェックポイントの設定
+checkpoint:
+  dirpath: /srv/research/snapshot/experiments/loo/checkpoints/yamashita/
+  monitor: "val_loss"
+  save_top_k: 1
+  mode: "min"
+
+# ロガーの設定
+logger:
+  save_dir: /srv/research/snapshot/experiments/loo/logs/
+  name: yamashita
+
+# 出力ファイルの設定
+output:
+  svm_results_path: results_svm.csv
+  rf_results_path: results_rf.csv
+  xgboost_results_path: results_xgboost.csv
+  nn_results_path: results_nn.csv
+
+
+# --- 話者間交-差検証用の設定 ---
+cross_subject:
+  subjects:
+    - metadata_path: "/srv/research/subset/yamashita/metadata.csv"
+      source_landmark_dir: "/srv/research/corrected/yamashita/processed_data/"
+    - metadata_path: "/srv/research/subset/kobayashi/metadata.csv"
+      source_landmark_dir: "/srv/research/corrected/kobayashi/processed_data"
+
+
+# --- EarlyStoppingの設定 ---
+early_stopping:
+  monitor: "val_loss"
+  patience: 5
+  mode: "min"
+  verbose: true
