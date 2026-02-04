@@ -11,7 +11,7 @@ echo ""
 
 # --- 基本設定 ---
 # 全ての実験結果を保存する親ディレクトリ
-EXPERIMENT_BASE_DIR="/srv/research/snapshot/experiments"
+EXPERIMENT_BASE_DIR="/srv/research/snapshot/experiments/hybrid/"
 # クラス数
 NUM_CLASSES=20
 # K-Foldの分割数
@@ -24,13 +24,17 @@ CONFIG_CR_FILE=cross.yaml
 # --- 実験パターンの定義 ---
 # ここで試したいAugmentationの組み合わせを定義します。
 # 書式: "実験名" "引数"
+#declare -a EXPERIMENTS=(
+#    "no_aug" "--augment-flip false --augment-rotate false --augment-noise false"
+#    "flip_only" "--augment-flip true --augment-rotate false --augment-noise false"
+#    "rotate_only" "--augment-flip false --augment-rotate true --augment-noise false"
+#    "noise_only" "--augment-flip false --augment-rotate false --augment-noise true"
+#    "all_aug" "--augment-flip true --augment-rotate true --augment-noise true"
+#)
 declare -a EXPERIMENTS=(
-    "no_aug" "--augment-flip false --augment-rotate false --augment-noise false"
-    "flip_only" "--augment-flip true --augment-rotate false --augment-noise false"
-    "rotate_only" "--augment-flip false --augment-rotate true --augment-noise false"
-    "noise_only" "--augment-flip false --augment-rotate false --augment-noise true"
     "all_aug" "--augment-flip true --augment-rotate true --augment-noise true"
 )
+    
 
 # --- 実験ループ ---
 # EXPERIMENTS配列を2つずつ処理 (名前と引数)

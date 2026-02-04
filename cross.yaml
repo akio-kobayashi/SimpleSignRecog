@@ -75,14 +75,14 @@ trainer:
 
 # モデルチェックポイントの設定
 checkpoint:
-  dirpath: /srv/research/snapshot/augmentation/cross/checkpoints/kobayashi/
+  dirpath: /srv/research/snapshot/experiments/cross/checkpoints/kobayashi/
   monitor: "val_loss"
   save_top_k: 1
   mode: "min"
 
 # ロガーの設定
 logger:
-  save_dir: /srv/research/snapshot/augmentation/cross/logs/
+  save_dir: /srv/research/snapshot/experiments/cross/logs/
   name: kobayashi
 
 # 出力ファイルの設定
