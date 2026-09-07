@@ -1,0 +1,24 @@
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MPLCONFIGDIR=/tmp/matplotlib
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl \
+    libgl1 libegl1 libgles2 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-preprocessing.txt ./
+RUN pip install --no-cache-dir -r requirements-preprocessing.txt
+
+RUN mkdir -p /opt/models \
+ && curl --fail --location --silent --show-error \
+    https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task \
+    --output /opt/models/hand_landmarker.task
+
+COPY src ./src
+
+ENTRYPOINT ["python", "src/process_videos.py"]
