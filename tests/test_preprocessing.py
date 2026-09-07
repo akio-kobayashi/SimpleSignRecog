@@ -1,13 +1,35 @@
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
+from src.preprocessing.landmark_extraction import _complete_handedness
 from src.preprocessing.landmark_layout import LANDMARK_DIM, RIGHT_HAND_OFFSET
 from src.preprocessing.missing_data import interpolate_missing_data
 from src.preprocessing.normalization import (
     canonical_normalize_landmarks,
     normalize_landmarks,
 )
+
+
+class HandednessTest(unittest.TestCase):
+    def test_reads_tasks_api_category(self):
+        result = SimpleNamespace(
+            handedness=[[SimpleNamespace(category_name="Left")]],
+            hand_landmarks=[[object()] * 21],
+        )
+        labels, inferred = _complete_handedness(result)
+        self.assertEqual(labels, {0: "Left"})
+        self.assertFalse(inferred)
+
+    def test_completes_missing_second_label(self):
+        result = SimpleNamespace(
+            handedness=[[SimpleNamespace(category_name="Right")]],
+            hand_landmarks=[[object()] * 21, [object()] * 21],
+        )
+        labels, inferred = _complete_handedness(result)
+        self.assertEqual(labels, {0: "Right", 1: "Left"})
+        self.assertTrue(inferred)
 
 
 class MissingDataTest(unittest.TestCase):

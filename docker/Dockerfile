@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=Asia/Tokyo
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     ffmpeg \
-    libgl1 libxext6 libsm6 libglib2.0-0 \
+    libgl1 libegl1 libgles2 libxext6 libsm6 libglib2.0-0 \
     build-essential git curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 

@@ -1,6 +1,6 @@
 # 学習データの前処理
 
-前回の実験と同じ前処理を、役割ごとのモジュールに分けています。
+NumPy 2系と現在のMediaPipe Tasks APIを使う前処理を、役割ごとのモジュールに分けています。旧MediaPipe Handsとは抽出器が異なるため、旧NPZとの数値の同一性は前提にしません。
 
 ```text
 MP4動画
@@ -14,18 +14,20 @@ MP4動画
 平滑化と392次元の特徴量生成
 ```
 
-## 1. MediaPipeによるランドマーク抽出
+## 1. MediaPipe Hand Landmarkerによる特徴量抽出
 
 実装は `src/preprocessing/landmark_extraction.py` にあります。左手を0～62、
-右手を63～125に格納します。MediaPipeが左右を返さない場合の推測規則、
-信頼度の既定値（検出0.5、追跡0.5）、モデル複雑度1は前回と同じです。
+右手を63～125に格納します。未検出座標はNaNです。VIDEOモードで各フレームの
+時刻を渡すため、Hand Landmarkerはフレーム間追跡を利用します。モデルファイルは
+公式の `hand_landmarker.task` を別途取得して指定します。
 
 データセット全体を変換するコマンドは従来どおりです。
 
 ```bash
 python src/process_videos.py \
   --input_root_dir /path/to/subject_videos \
-  --output_base_dir ./data/subject
+  --output_base_dir ./data/subject \
+  --model_asset_path /path/to/hand_landmarker.task
 ```
 
 出力は動画ごとの `processed_data/<クラス>/<動画名>.npz` と

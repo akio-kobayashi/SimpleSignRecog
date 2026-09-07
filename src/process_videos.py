@@ -5,7 +5,7 @@ MediaPipeを使う1動画単位の処理は ``preprocessing.landmark_extraction`
 分離しています。このファイルでは入力の列挙と保存だけを行います。
 
 実行例:
-    python src/process_videos.py -i /path/to/subject_videos -o ./data/subject
+    python src/process_videos.py -i /path/to/subject_videos -o ./data/subject -m ./hand_landmarker.task
 """
 
 import argparse
@@ -29,6 +29,7 @@ def find_mp4_videos(class_dir: Path) -> list[Path]:
 def create_dataset(
     input_root_dir: Path,
     output_base_dir: Path,
+    model_asset_path: Path,
     *,
     draw: bool = False,
     draw_dir: Path | None = None,
@@ -69,6 +70,7 @@ def create_dataset(
             print(f"動画を処理中: {video_path}")
             landmarks, had_inference, num_frames = extract_landmarks_from_video(
                 video_path,
+                model_asset_path=model_asset_path,
                 draw=draw,
                 draw_dir=draw_dir,
                 static_image_mode=static_image_mode,
@@ -124,6 +126,10 @@ def parse_args() -> argparse.Namespace:
         "-o", "--output_base_dir", required=True, type=Path,
         help="processed_dataとmetadata.csvの出力先",
     )
+    parser.add_argument(
+        "-m", "--model_asset_path", required=True, type=Path,
+        help="MediaPipe Hand Landmarkerの.taskモデル",
+    )
     parser.add_argument("--draw", action="store_true", help="検出結果の動画も保存する")
     parser.add_argument("--drawdir", type=Path, default=None, help="描画動画の出力先")
     parser.add_argument("--max-hands", type=int, default=2, help="検出する最大手数")
@@ -138,6 +144,7 @@ def main() -> None:
     create_dataset(
         args.input_root_dir,
         args.output_base_dir,
+        args.model_asset_path,
         draw=args.draw,
         draw_dir=args.drawdir,
         static_image_mode=args.static,
