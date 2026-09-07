@@ -18,10 +18,10 @@ MP4動画
 |---|---|
 | `src/` | ランドマーク抽出、前処理、データセット、モデル |
 | `scripts/` | サーバー上で前処理を一括実行するスクリプト |
-| `docker/` | 前処理用と学習用のコンテナ定義 |
+| `notebooks/` | 前処理の説明用ノートブック |
 | `tests/` | 前処理モジュールのテスト |
 
-`data/`、`corrected/`、`experiments/`、`logs/`、`checkpoints/` などは生成物であり、Gitでは管理しません。Colabノートブックは `notebooks/preprocessing_colab.ipynb` に残していますが、現在の推奨手順はSSH先でのDocker実行です。
+`data/`、`corrected/`、`experiments/`、`logs/`、`checkpoints/` などは生成物であり、Gitでは管理しません。Colabノートブックは `notebooks/preprocessing_colab.ipynb` に残していますが、現在の推奨手順はSSH先での `uv` 実行です。
 
 ## 1. サーバーでランドマークを抽出する
 
@@ -33,7 +33,7 @@ git clone https://github.com/akio-kobayashi/SimpleSignRecog.git
 cd SimpleSignRecog
 ```
 
-clone済みの場合は `git switch main` と `git pull --ff-only` で更新します。
+clone済みの場合は `git switch main` と `git pull --ff-only` で更新します。サーバーには `uv` が必要です。`uv --version` で利用できることを確認してください。
 
 動画はサーバー上の次の場所に配置済みであることを前提とします。
 
@@ -52,7 +52,7 @@ clone済みの場合は `git switch main` と `git pull --ff-only` で更新し�
 ./scripts/run_preprocessing.sh subject_03
 ```
 
-スクリプトはPython 3.13、NumPy 2系、MediaPipe Tasksを含む前処理用イメージをビルドし、抽出と左右ラベル補正を続けて実行します。元動画は変更しません。
+スクリプトは `uv` の隔離環境へPython 3.13、NumPy 2系、MediaPipe Tasksを準備し、抽出と左右ラベル補正を続けて実行します。依存関係は `requirements-preprocessing.txt` から読み込みます。元動画は変更しません。
 
 ```text
 /srv/share/ego_sign_recog/processed/
@@ -115,5 +115,5 @@ python aggregate_results.py <results-directory> --mode cv --config <experiment.y
 前処理用依存関係を導入した環境では次を実行します。
 
 ```bash
-python -m unittest tests.test_preprocessing
+uv run --isolated --python 3.13 --with-requirements requirements-preprocessing.txt python -m unittest tests.test_preprocessing
 ```

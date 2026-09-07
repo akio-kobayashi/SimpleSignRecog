@@ -18,6 +18,11 @@ case "$subject_id" in
         ;;
 esac
 
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required: https://docs.astral.sh/uv/getting-started/installation/" >&2
+    exit 1
+fi
+
 data_root=${EGO_SIGN_DATA_ROOT:-/srv/share/ego_sign_recog}
 input_dir="$data_root/videos/$subject_id"
 output_root="$data_root/processed"
@@ -29,35 +34,33 @@ fi
 
 raw_output_dir="$output_root/data/$subject_id"
 corrected_output_dir="$output_root/corrected/$subject_id"
-mkdir -p "$raw_output_dir" "$corrected_output_dir"
+model_dir="$output_root/models"
+model_path="$model_dir/hand_landmarker.task"
+mkdir -p "$raw_output_dir" "$corrected_output_dir" "$model_dir"
 
 project_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-image_name=${SIMPLE_SIGN_PREPROCESSING_IMAGE:-simple-sign-preprocessing:latest}
+requirements="$project_dir/requirements-preprocessing.txt"
+uv_run=(uv run --isolated --python 3.13 --with-requirements "$requirements")
 
-docker build \
-    --file "$project_dir/docker/Dockerfile.preprocessing" \
-    --tag "$image_name" \
-    "$project_dir"
+if [[ ! -s "$model_path" ]]; then
+    model_url=https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+    temp_model="$model_path.tmp.$$"
+    trap 'rm -f "$temp_model"' EXIT
+    "${uv_run[@]}" python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$model_url" "$temp_model"
+    mv "$temp_model" "$model_path"
+    trap - EXIT
+fi
 
-docker run --rm \
-    --user "$(id -u):$(id -g)" \
-    --volume "$input_dir:/input:ro" \
-    --volume "$raw_output_dir:/output" \
-    "$image_name" \
-    --input_root_dir /input \
-    --output_base_dir /output \
-    --model_asset_path /opt/models/hand_landmarker.task \
+cd "$project_dir"
+"${uv_run[@]}" python src/process_videos.py \
+    --input_root_dir "$input_dir" \
+    --output_base_dir "$raw_output_dir" \
+    --model_asset_path "$model_path" \
     "$@"
 
-docker run --rm \
-    --user "$(id -u):$(id -g)" \
-    --entrypoint python \
-    --volume "$raw_output_dir:/input:ro" \
-    --volume "$corrected_output_dir:/output" \
-    "$image_name" \
-    src/correct_inferred_data.py \
-    --input_base_dir /input \
-    --output_base_dir /output
+"${uv_run[@]}" python src/correct_inferred_data.py \
+    --input_base_dir "$raw_output_dir" \
+    --output_base_dir "$corrected_output_dir"
 
 echo "Raw data: $raw_output_dir"
 echo "Corrected data: $corrected_output_dir"
