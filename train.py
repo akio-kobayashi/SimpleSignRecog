@@ -54,8 +54,9 @@ def get_feature_dim(feature_config: dict) -> int:
     BASE_COORD_DIM = 21 * 3 * 2
     
     # 既存の特徴量パイプラインの次元数
-    # pos(63*2) + vel(63*2) + acc(63*2) + geo(4*2) のうち、片手分が入力となる
-    EXISTING_PIPELINE_DIM = 193 * 2
+    # pos(63*2) + vel(63*2) + acc(63*2) + geo(4*2) + global_vel(3*2) のうち、片手分が入力となる
+    # 193 (既存) + 3 (グローバル速度) = 196
+    EXISTING_PIPELINE_DIM = 196 * 2
 
     normalize_mode = feature_config.get('normalize_mode', 'normalize_landmarks')
     paper_conf = feature_config.get('paper_features', {})

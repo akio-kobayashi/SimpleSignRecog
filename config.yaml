@@ -40,7 +40,7 @@ model:
   # temporal_kernel_size: 9
 
   # --- TwoStreamCNN / 共通のハイパーパラメータ ---
-  input_dim: 386 # この値は train.py で features の設定に基づいて自動計算・上書きされます
+  input_dim: 392 # この値は train.py で features の設定に基づいて自動計算・上書きされます
   num_classes: 20
   channels: 128
   dropout: 0.2
@@ -50,6 +50,7 @@ model:
   lstm_layers: 1
   # --- CNNエンコーダのハイパーパラメータ ---
   cnn_num_blocks: 3
+  cnn_type: "1d" # "1d" または "2d"
   loss_lambda: 0.8 # CTC損失の重み (total_loss = lambda * ctc_loss + (1 - lambda) * ce_loss)
   report_target: 'ctc' # 最終レポートの計算対象: 'ctc' または 'ce'
 

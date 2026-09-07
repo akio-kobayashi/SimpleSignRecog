@@ -9,17 +9,19 @@ import pandas as pd
 from torch import Tensor
 from torch.utils.data import Dataset, Sampler
 
-# `feature_engineering.py`で定義された、データの前処理や特徴量計算のための関数群をインポート
+# データ拡張・特徴量計算と、独立した前処理モジュールを読み込む
 from src.feature_engineering import (
-    interpolate_missing_data,
     augment_flip,
     augment_noise,
     augment_rotate,
-    normalize_landmarks,
-    canonical_normalize_landmarks,
     smooth_landmarks,
     calculate_features,
     extract_paper_features,
+)
+from src.preprocessing.missing_data import interpolate_missing_data
+from src.preprocessing.normalization import (
+    canonical_normalize_landmarks,
+    normalize_landmarks,
 )
 
 
@@ -143,7 +145,8 @@ class SignDataset(Dataset):
             smoothed_landmarks = smooth_landmarks(normalized_landmarks)
 
             # 3c. 特徴量の計算
-            final_features = calculate_features(smoothed_landmarks)
+            # 正規化前のデータ(processed_landmarks)を渡して、グローバルな軌跡情報を計算に含める
+            final_features = calculate_features(smoothed_landmarks, raw_landmarks=processed_landmarks)
 
         # 4. NaN/infチェック: 稀に発生する不安定な値を0で置き換え、学習の安定化を図る
         if np.any(np.isnan(final_features)) or np.any(np.isinf(final_features)):
